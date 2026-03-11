@@ -23,12 +23,15 @@ private extension Color {
 // MARK: - ResultView
 
 struct ResultView: View {
-    let result:          GameResult
-    let bestTime:        TimeInterval?   // chain mode personal best
-    let bestSurvivalFood: Int?           // survival mode personal best
-    let onRestart:       () -> Void
+    let result:           GameResult
+    let language:         AppLanguage
+    let bestTime:         TimeInterval?   // chain mode personal best
+    let bestSurvivalFood: Int?            // survival mode personal best
+    let onRestart:        () -> Void
+    let onBackToMenu:     () -> Void
 
     @State private var appeared = false
+    private var loc: L { L(lang: language) }
 
     private var isNewBestChain: Bool {
         guard result.mode == .chain, result.won else { return false }
@@ -98,14 +101,14 @@ struct ResultView: View {
                 }
 
                 // Mode badge
-                Text(result.mode == .survival ? "SURVIVAL MODE" : "CHAIN MODE")
-                    .font(.system(size: 9, weight: .black, design: .monospaced))
+                Text(result.mode == .survival ? loc.survivalMode : loc.chainMode)
+                    .font(.system(size: 9, weight: .black))
                     .foregroundColor(result.mode == .survival ? .pxGold : .pxAmber)
                     .padding(.bottom, 4)
 
                 // Status title
                 Text(statusTitle)
-                    .font(.system(size: 26, weight: .black, design: .monospaced))
+                    .font(.system(size: 26, weight: .black))
                     .foregroundColor(.pxCream)
                     .shadow(color: .black.opacity(0.6), radius: 0, x: 2, y: 2)
                     .multilineTextAlignment(.center)
@@ -117,8 +120,8 @@ struct ResultView: View {
                         Image(systemName: "star.fill")
                             .font(.system(size: 13, weight: .black))
                             .foregroundColor(.pxGold)
-                        Text("NEW PERSONAL BEST!")
-                            .font(.system(size: 13, weight: .black, design: .monospaced))
+                        Text(loc.newBest)
+                            .font(.system(size: 13, weight: .black))
                             .foregroundColor(.pxGold)
                     }
                     .padding(.horizontal, 14)
@@ -133,34 +136,31 @@ struct ResultView: View {
                 // ── Stats card ──
                 VStack(spacing: 0) {
                     if result.mode == .chain && result.won {
-                        statRow(label: "COMPLETION TIME",
+                        statRow(label: loc.completionTime,
                                 value: formattedTime(result.completionTime),
                                 valueColor: .pxAmber)
                         pixelDivider()
                     }
-                    statRow(label: result.mode == .chain
-                                ? "FOOD EATEN"
-                                : "FOOD EATEN (BEST)",
+                    statRow(label: result.mode == .chain ? loc.foodEatenLabel : loc.foodEatenBest,
                             value: result.mode == .chain
                                 ? "\(result.foodEaten) / \(GameConstants.chainBreakTarget)"
                                 : "\(result.foodEaten)")
                     pixelDivider()
-                    statRow(label: "TRASH EATEN",
+                    statRow(label: loc.trashEaten,
                             value: "\(result.garbageMistakes)",
                             valueColor: result.garbageMistakes > 0 ? .pxRed : .pxCream)
                     pixelDivider()
-                    statRow(label: "CAUSE OF DEATH",
+                    statRow(label: loc.causeDeath,
                             icon: "bolt.fill",
-                            value: "BOMB",
+                            value: loc.bombCause,
                             valueColor: .pxRed)
 
-                    // Personal best row
                     if result.mode == .chain, let best = bestTime {
                         pixelDivider()
-                        statRow(label: "BEST TIME", value: formattedTime(best))
+                        statRow(label: loc.bestTime, value: formattedTime(best))
                     } else if result.mode == .survival, let best = bestSurvivalFood {
                         pixelDivider()
-                        statRow(label: "BEST FOOD", value: "\(best)")
+                        statRow(label: loc.bestFood, value: "\(best)")
                     }
                 }
                 .background(Color.white.opacity(0.08))
@@ -168,20 +168,34 @@ struct ResultView: View {
                 .padding(.horizontal, 28)
                 .padding(.bottom, 32)
 
-                // ── Play Again button ──
-                Button(action: onRestart) {
-                    Text("[ PLAY AGAIN ]")
-                        .font(.system(size: 20, weight: .black, design: .monospaced))
-                        .foregroundColor(.pxNavy)
-                        .frame(width: 230, height: 54)
-                        .background(Color.pxCream)
-                        .overlay(alignment: .bottomTrailing) {
-                            Rectangle()
-                                .fill(Color.black.opacity(0.4))
-                                .frame(width: 230, height: 54)
-                                .offset(x: 4, y: 4)
-                                .zIndex(-1)
-                        }
+                // ── Buttons ──
+                VStack(spacing: 12) {
+                    Button(action: onRestart) {
+                        Text(loc.playAgain)
+                            .font(.system(size: 20, weight: .black))
+                            .foregroundColor(.pxNavy)
+                            .frame(width: 230, height: 54)
+                            .background(Color.pxCream)
+                            .overlay(alignment: .bottomTrailing) {
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.4))
+                                    .frame(width: 230, height: 54)
+                                    .offset(x: 4, y: 4)
+                                    .zIndex(-1)
+                            }
+                    }
+
+                    Button(action: onBackToMenu) {
+                        Text(loc.backToMenu)
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundColor(.pxCream)
+                            .frame(width: 230, height: 40)
+                            .background(Color.white.opacity(0.10))
+                            .overlay(
+                                Rectangle()
+                                    .stroke(Color.pxCream.opacity(0.40), lineWidth: 1)
+                            )
+                    }
                 }
 
                 Spacer()
@@ -194,8 +208,8 @@ struct ResultView: View {
     // MARK: - Helpers
 
     private var statusTitle: String {
-        if result.mode == .survival { return "BOOM! \(result.foodEaten) FOOD" }
-        return result.won ? "YOU BROKE FREE!" : "BOMB HIT!"
+        if result.mode == .survival { return "\(loc.boomText) \(result.foodEaten) \(loc.food)" }
+        return result.won ? loc.youBrokeFree : loc.bombHit
     }
 
     @ViewBuilder
@@ -236,8 +250,10 @@ struct ResultView: View {
     ResultView(
         result: GameResult(won: false, completionTime: 38.5,
                            foodEaten: 22, garbageMistakes: 3, mode: .survival),
+        language: .zh,
         bestTime: nil,
         bestSurvivalFood: 18,
-        onRestart: {}
+        onRestart: {},
+        onBackToMenu: {}
     )
 }

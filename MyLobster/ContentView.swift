@@ -7,8 +7,12 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var screen: AppScreen = .title
+
+    @AppStorage("language")         private var langRaw:             String = AppLanguage.zh.rawValue
     @AppStorage("bestChainTime")    private var bestChainTimeRaw:    Double = -1
     @AppStorage("bestSurvivalFood") private var bestSurvivalFoodRaw: Int    = -1
+
+    private var language: AppLanguage { AppLanguage(rawValue: langRaw) ?? .zh }
 
     private var bestChainTime: TimeInterval? {
         bestChainTimeRaw >= 0 ? bestChainTimeRaw : nil
@@ -27,6 +31,9 @@ struct ContentView: View {
             case .game(let mode):
                 GameView(
                     mode: mode,
+                    language: language,
+                    bestChainTime: bestChainTime,
+                    bestSurvivalFood: bestSurvivalFood,
                     onGameEnd: handleGameEnd,
                     onQuitToTitle: goToTitle
                 )
@@ -35,9 +42,11 @@ struct ContentView: View {
             case .result(let result):
                 ResultView(
                     result: result,
+                    language: language,
                     bestTime: bestChainTime,
                     bestSurvivalFood: bestSurvivalFood,
-                    onRestart: { startGame(result.mode) }
+                    onRestart: { startGame(result.mode) },
+                    onBackToMenu: goToTitle
                 )
                 .transition(.opacity)
             }

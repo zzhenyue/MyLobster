@@ -8,13 +8,21 @@ import SpriteKit
 
 struct GameView: View {
     let mode: GameMode
-    let onGameEnd: (GameResult) -> Void
+    let language: AppLanguage
+    let bestChainTime:    TimeInterval?
+    let bestSurvivalFood: Int?
+    let onGameEnd:    (GameResult) -> Void
     let onQuitToTitle: () -> Void
 
     var body: some View {
         GeometryReader { geo in
-            SpriteKitGameView(size: geo.size, mode: mode,
-                              onGameEnd: onGameEnd, onQuitToTitle: onQuitToTitle)
+            SpriteKitGameView(size: geo.size,
+                              mode: mode,
+                              language: language,
+                              bestChainTime: bestChainTime,
+                              bestSurvivalFood: bestSurvivalFood,
+                              onGameEnd: onGameEnd,
+                              onQuitToTitle: onQuitToTitle)
         }
         .ignoresSafeArea()
     }
@@ -25,7 +33,10 @@ struct GameView: View {
 struct SpriteKitGameView: UIViewRepresentable {
     let size: CGSize
     let mode: GameMode
-    let onGameEnd: (GameResult) -> Void
+    let language: AppLanguage
+    let bestChainTime:    TimeInterval?
+    let bestSurvivalFood: Int?
+    let onGameEnd:    (GameResult) -> Void
     let onQuitToTitle: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -40,9 +51,12 @@ struct SpriteKitGameView: UIViewRepresentable {
         view.backgroundColor = .clear
 
         let scene = GameScene(size: size)
-        scene.gameMode     = mode
-        scene.scaleMode    = .aspectFill
-        scene.gameDelegate = context.coordinator
+        scene.gameMode          = mode
+        scene.language          = language
+        scene.bestChainTime     = bestChainTime
+        scene.bestSurvivalFood  = bestSurvivalFood
+        scene.scaleMode         = .aspectFill
+        scene.gameDelegate      = context.coordinator
         view.presentScene(scene)
 
         return view
@@ -76,5 +90,7 @@ struct SpriteKitGameView: UIViewRepresentable {
 }
 
 #Preview {
-    GameView(mode: .chain, onGameEnd: { _ in }, onQuitToTitle: {})
+    GameView(mode: .chain, language: .zh,
+             bestChainTime: nil, bestSurvivalFood: nil,
+             onGameEnd: { _ in }, onQuitToTitle: {})
 }

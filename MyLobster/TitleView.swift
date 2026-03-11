@@ -1,7 +1,7 @@
 //
 //  TitleView.swift
 //  MyLobster
-//  Pixel-art style title + mode-selection screen.
+//  Pixel-art style title + mode-selection screen. Supports ZH / EN.
 //
 
 import SwiftUI
@@ -26,7 +26,11 @@ private extension Color {
 struct TitleView: View {
     let onPlay: (GameMode) -> Void
 
-    @State private var selectedMode: GameMode = .chain
+    @State  private var selectedMode: GameMode = .chain
+    // Language stored in UserDefaults so it persists across launches
+    @AppStorage("language") private var langRaw: String = AppLanguage.zh.rawValue
+
+    private var loc: L { L(lang: AppLanguage(rawValue: langRaw) ?? .zh) }
 
     var body: some View {
         ZStack {
@@ -74,7 +78,18 @@ struct TitleView: View {
             }
             .ignoresSafeArea()
 
-            // ── Content ──
+            // ── Language toggle — top-right corner ──
+            VStack {
+                HStack {
+                    Spacer()
+                    langToggleButton
+                        .padding(.top, 54)
+                        .padding(.trailing, 20)
+                }
+                Spacer()
+            }
+
+            // ── Main content ──
             VStack(spacing: 0) {
                 Spacer()
 
@@ -83,46 +98,42 @@ struct TitleView: View {
                     .frame(width: 120, height: 120)
                     .padding(.bottom, 10)
 
-                // Title
-                Text("MY LOBSTER")
-                    .font(.system(size: 34, weight: .black, design: .monospaced))
+                // Title — Chinese uses system font (monospaced doesn't support CJK)
+                Text(loc.appTitle)
+                    .font(titleFont)
                     .foregroundColor(.pxCream)
                     .shadow(color: .black.opacity(0.6), radius: 0, x: 3, y: 3)
                     .padding(.bottom, 2)
 
-                Text("FEED. GROW. ESCAPE.")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                Text(loc.tagline)
+                    .font(subtitleFont)
                     .foregroundColor(.pxAmber)
                     .padding(.bottom, 20)
 
                 // ── Mode picker ──
                 VStack(spacing: 0) {
-                    Text("SELECT MODE")
-                        .font(.system(size: 10, weight: .black, design: .monospaced))
+                    Text(loc.selectMode)
+                        .font(captionFont)
                         .foregroundColor(.pxCream.opacity(0.55))
                         .padding(.bottom, 8)
 
                     HStack(spacing: 10) {
-                        modeTile(
-                            mode: .chain,
-                            icon: "link",
-                            title: "CHAIN",
-                            subtitle: "Eat 30.\nBreak free."
-                        )
-                        modeTile(
-                            mode: .survival,
-                            icon: "infinity",
-                            title: "SURVIVAL",
-                            subtitle: "Eat forever.\nGrow huge."
-                        )
+                        modeTile(mode: .chain,
+                                 icon: "link",
+                                 title: loc.chainTitle,
+                                 subtitle: loc.chainSubtitle)
+                        modeTile(mode: .survival,
+                                 icon: "infinity",
+                                 title: loc.survivalTitle,
+                                 subtitle: loc.survivalSubtitle)
                     }
                 }
                 .padding(.bottom, 16)
 
                 // ── PLAY button ──
                 Button(action: { onPlay(selectedMode) }) {
-                    Text("[ PLAY ]")
-                        .font(.system(size: 24, weight: .black, design: .monospaced))
+                    Text(loc.playButton)
+                        .font(playFont)
                         .foregroundColor(.pxNavy)
                         .frame(width: 200, height: 54)
                         .background(Color.pxCream)
@@ -138,23 +149,17 @@ struct TitleView: View {
 
                 // ── Control badges ──
                 HStack(spacing: 8) {
-                    controlBadge(
-                        icon: "fork.knife",  iconColor: .pxGreen,
-                        label: "FOOD",  swipe: "↓ EAT",     miss: "↑←→ MISS"
-                    )
-                    controlBadge(
-                        icon: "trash.fill",  iconColor: .pxCream.opacity(0.7),
-                        label: "TRASH", swipe: "→ NET",      miss: "OTHER = -1"
-                    )
-                    controlBadge(
-                        icon: "bolt.fill",   iconColor: .pxRed,
-                        label: "BOMB",  swipe: "← HAND",    miss: "OTHER = BOOM"
-                    )
+                    controlBadge(icon: "fork.knife", iconColor: .pxGreen,
+                                 label: loc.food,  swipe: loc.eatSwipe,  miss: loc.foodMiss)
+                    controlBadge(icon: "trash.fill", iconColor: .pxCream.opacity(0.7),
+                                 label: loc.trash, swipe: loc.netSwipe,  miss: loc.trashMiss)
+                    controlBadge(icon: "bolt.fill",  iconColor: .pxRed,
+                                 label: loc.bomb,  swipe: loc.handSwipe, miss: loc.bombMiss)
                 }
                 .padding(.bottom, 8)
 
-                Text("Trash = lose progress  •  Wrong bomb = instant death!")
-                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                Text(loc.warning)
+                    .font(.system(size: 10, weight: .regular))
                     .foregroundColor(.pxCream.opacity(0.40))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
@@ -166,16 +171,61 @@ struct TitleView: View {
         }
     }
 
+    // MARK: - Language toggle button
+
+    @ViewBuilder
+    private var langToggleButton: some View {
+        let isZh = langRaw == AppLanguage.zh.rawValue
+        Button(action: {
+            langRaw = isZh ? AppLanguage.en.rawValue : AppLanguage.zh.rawValue
+        }) {
+            // Pixel square button with the opposite language label (shows what you'll switch TO)
+            ZStack {
+                Rectangle()
+                    .fill(Color.white.opacity(0.10))
+                Rectangle()
+                    .stroke(Color.white.opacity(0.30), lineWidth: 1)
+            }
+            .frame(width: 48, height: 30)
+            .overlay(
+                Text(isZh ? "EN" : "中文")
+                    .font(.system(size: isZh ? 13 : 11, weight: .black, design: .monospaced))
+                    .foregroundColor(.pxCream)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Font helpers (CJK needs system font, not monospaced)
+
+    private var isZh: Bool { langRaw == AppLanguage.zh.rawValue }
+    private var titleFont: Font {
+        isZh ? .system(size: 32, weight: .black)
+              : .system(size: 34, weight: .black, design: .monospaced)
+    }
+    private var subtitleFont: Font {
+        isZh ? .system(size: 13, weight: .bold)
+              : .system(size: 12, weight: .bold, design: .monospaced)
+    }
+    private var captionFont: Font {
+        isZh ? .system(size: 11, weight: .black)
+              : .system(size: 10, weight: .black, design: .monospaced)
+    }
+    private var playFont: Font {
+        isZh ? .system(size: 22, weight: .black)
+              : .system(size: 24, weight: .black, design: .monospaced)
+    }
+
     // MARK: - Mode tile
 
     @ViewBuilder
     private func modeTile(mode: GameMode, icon: String, title: String, subtitle: String) -> some View {
-        let isSelected = selectedMode == mode
+        let isSelected  = selectedMode == mode
         let borderColor: Color = isSelected
             ? (mode == .survival ? .pxGold : .pxAmber)
             : Color.white.opacity(0.18)
-        let bgOpacity: Double = isSelected ? 0.16 : 0.07
-        let titleColor: Color = isSelected
+        let bgOpacity: Double  = isSelected ? 0.16 : 0.07
+        let titleColor: Color  = isSelected
             ? (mode == .survival ? .pxGold : .pxAmber)
             : .pxCream
 
@@ -186,11 +236,11 @@ struct TitleView: View {
                     .foregroundColor(titleColor)
 
                 Text(title)
-                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .font(.system(size: 11, weight: .black))
                     .foregroundColor(titleColor)
 
                 Text(subtitle)
-                    .font(.system(size: 9, weight: .regular, design: .monospaced))
+                    .font(.system(size: 9, weight: .regular))
                     .foregroundColor(.pxCream.opacity(0.60))
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
@@ -216,13 +266,13 @@ struct TitleView: View {
                 .foregroundColor(iconColor)
                 .frame(height: 22)
             Text(label)
-                .font(.system(size: 9, weight: .black, design: .monospaced))
+                .font(.system(size: 9, weight: .black))
                 .foregroundColor(.pxCream)
             Text(swipe)
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .font(.system(size: 9, weight: .bold))
                 .foregroundColor(.pxAmber)
             Text(miss)
-                .font(.system(size: 8, weight: .regular, design: .monospaced))
+                .font(.system(size: 8, weight: .regular))
                 .foregroundColor(.pxCream.opacity(0.5))
         }
         .frame(width: 96, height: 80)

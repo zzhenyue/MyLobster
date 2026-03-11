@@ -14,6 +14,7 @@
 
 import SpriteKit
 import UIKit
+import AVFoundation
 
 // MARK: - Delegate
 
@@ -139,7 +140,12 @@ class FallingObjectNode: SKNode {
 class GameScene: SKScene {
 
     // MARK: Configuration
-    var gameMode: GameMode = .chain
+    var gameMode: GameMode   = .chain
+    var language: AppLanguage = .zh   // passed from ContentView; controls all in-game text
+
+    // Personal bests (passed in from ContentView so the record box can show them)
+    var bestChainTime:    TimeInterval? = nil
+    var bestSurvivalFood: Int?          = nil
 
     // MARK: Delegate
     weak var gameDelegate: GameSceneDelegate?
@@ -153,7 +159,7 @@ class GameScene: SKScene {
     private var tutorialIndex   = 0
 
     // Timer — we track elapsed manually so pause truly freezes it
-    private var pauseStartTime: Date?          // set when paused
+    private var pauseStartTime: Date?
     private var totalPausedSeconds: TimeInterval = 0
     private var gameStartTime  = Date()
     private var elapsedTime:   TimeInterval = 0
@@ -176,8 +182,16 @@ class GameScene: SKScene {
     private var progressLabel:      SKLabelNode!
     private var feedbackLabel:      SKLabelNode!
     private var hintLabel:          SKLabelNode!
-    private var pauseBtn:           SKNode!
+    private var currentScoreLabel:  SKLabelNode!   // left seaweed box – live score
+    private var recordLabel:        SKLabelNode!   // right seaweed box – best score
+    private var pauseIndicator:     SKNode!        // "||" icon drawn on the lobster body
     private var currentObject:      FallingObjectNode?
+
+    // Convenience localisation accessor
+    private var loc: L { L(lang: language) }
+
+    // MARK: Audio
+    private var bgMusicPlayer: AVAudioPlayer?
 
     // MARK: Swipe tracking
     private var swipeStart     = CGPoint.zero
@@ -212,11 +226,11 @@ class GameScene: SKScene {
             buildChain()
         }
         buildLobster()
-        buildHUD()
+        buildHUD()        // also calls buildSidePanels() internally
         buildHintLabel()
-        buildPauseButton()
         gameStartTime = Date()
         totalPausedSeconds = 0
+        startBackgroundMusic()
         spawnNextObject()
         run(SKAction.repeatForever(SKAction.sequence([
             SKAction.wait(forDuration: 0.05),
@@ -255,17 +269,10 @@ class GameScene: SKScene {
         floor2.zPosition = 2
         addChild(floor2)
 
-        // Pixel seaweed
-        for xPos: CGFloat in [-W * 0.38, W * 0.38] {
-            let col = SKColor(red: 0.10, green: 0.50, blue: 0.18, alpha: 0.85)
-            for j in 0..<5 {
-                let seg = px(6, 8, fill: col)
-                seg.position  = CGPoint(x: xPos + (j % 2 == 0 ? 4 : -4),
-                                        y: -H/2 + 28 + CGFloat(j) * 8)
-                seg.zPosition = 3
-                addChild(seg)
-            }
-        }
+        // Tall pixel seaweed columns — left side holds the pause button, right holds the record box.
+        // The boxes themselves are built in buildSidePanels(); here we just draw the stalks.
+        buildSeaweedStalk(xPos: -W * 0.38, segments: 14)
+        buildSeaweedStalk(xPos:  W * 0.38, segments: 14)
     }
 
     private func spawnPixelBubbles(count: Int = 6) {
@@ -301,7 +308,7 @@ class GameScene: SKScene {
         progressBarFill = makeFill(bw: bw, bh: bh, ratio: 0)
         addChild(progressBarFill!)
 
-        let cap = pixelLabel("CHAIN: 0/\(GameConstants.chainBreakTarget)", size: 10,
+        let cap = pixelLabel("\(loc.chainLabel): 0/\(GameConstants.chainBreakTarget)", size: 10,
                               color: Px.dimWhite)
         cap.name     = "barCaption"
         cap.position = CGPoint(x: 0, y: barY + bh/2 + 7)
@@ -510,7 +517,7 @@ class GameScene: SKScene {
             plate.addChild(bolt)
         }
 
-        let cap = pixelLabel("CHAINED", size: 9, color: Px.dimWhite)
+        let cap = pixelLabel(loc.chainedText, size: 9, color: Px.dimWhite)
         cap.position  = CGPoint(x: 0, y: chainBottomY - 16)
         cap.zPosition = 8
         addChild(cap)
@@ -545,44 +552,58 @@ class GameScene: SKScene {
         }
     }
 
-    // MARK: - HUD
+    // MARK: - Seaweed helper
+
+    /// Draws a single zigzag seaweed stalk rooted at the sand floor, growing upward.
+    /// `segments` controls height (~8px per segment).
+    @discardableResult
+    private func buildSeaweedStalk(xPos: CGFloat, segments: Int) -> CGFloat {
+        let col = SKColor(red: 0.10, green: 0.50, blue: 0.18, alpha: 0.85)
+        let segH: CGFloat = 8
+        let baseY = -H/2 + 28
+        for j in 0..<segments {
+            let seg = px(6, segH, fill: col)
+            seg.position  = CGPoint(x: xPos + (j % 2 == 0 ? 4 : -4),
+                                    y: baseY + CGFloat(j) * segH)
+            seg.zPosition = 3
+            addChild(seg)
+        }
+        // Return the y-top of this stalk
+        return baseY + CGFloat(segments) * segH
+    }
+
+    // MARK: - HUD (timer centred top + progress label + side panels)
 
     private func buildHUD() {
-        // Timer (top right)
-        let tBg = px(84, 26, fill: Px.navy, stroke: Px.steel, sw: 2)
-        tBg.position  = CGPoint(x: W * 0.34, y: H * 0.44)
+        // Timer — centred at top (chain mode shows time; survival mode shows time too for personal ref)
+        let tBg = px(94, 28, fill: Px.navy, stroke: Px.steel, sw: 2)
+        tBg.position  = CGPoint(x: 0, y: H * 0.44)
         tBg.zPosition = 19
         addChild(tBg)
 
-        timerLabel          = pixelLabel("0.0s", size: 14, color: Px.white)
-        timerLabel.position  = CGPoint(x: W * 0.34, y: H * 0.44 - 5)
-        timerLabel.zPosition = 20
+        timerLabel           = pixelLabel("0.0s", size: 14, color: Px.white)
+        timerLabel.position   = CGPoint(x: 0, y: H * 0.44 - 5)
+        timerLabel.zPosition  = 20
         addChild(timerLabel)
 
-        // Progress / food count (top left)
+        // Progress label — centred just below timer
         if gameMode == .chain {
             progressLabel = pixelLabel("0/\(GameConstants.chainBreakTarget)",
-                                       size: 14, color: Px.white)
+                                       size: 13, color: Px.white)
         } else {
-            progressLabel = pixelLabel("FOOD: 0", size: 14, color: Px.survivalGold)
+            progressLabel = pixelLabel("\(loc.food): 0", size: 13, color: Px.survivalGold)
         }
-        progressLabel.horizontalAlignmentMode = .left
-        progressLabel.position  = CGPoint(x: -W * 0.44, y: H * 0.44 - 5)
+        progressLabel.position  = CGPoint(x: 0, y: H * 0.44 - 26)
         progressLabel.zPosition = 20
         addChild(progressLabel)
-
-        // Survival mode badge
-        if gameMode == .survival {
-            let badge = pixelLabel("SURVIVAL", size: 9, color: Px.survivalGold)
-            badge.position  = CGPoint(x: -W * 0.44 + 34, y: H * 0.44 + 8)
-            badge.zPosition = 20
-            addChild(badge)
-        }
 
         feedbackLabel          = pixelLabel("", size: 22, color: Px.white)
         feedbackLabel.position  = CGPoint(x: 0, y: lobsterY + bodyH + 32)
         feedbackLabel.zPosition = 22
         addChild(feedbackLabel)
+
+        // Build the seaweed-tied side panels (pause left, record right)
+        buildSidePanels()
     }
 
     private func buildHintLabel() {
@@ -592,25 +613,114 @@ class GameScene: SKScene {
         addChild(hintLabel)
     }
 
-    // MARK: - Pause Button
+    // MARK: - Side panels tied to seaweed
 
-    private func buildPauseButton() {
-        pauseBtn          = SKNode()
-        pauseBtn.position  = CGPoint(x: -W * 0.40, y: H * 0.44)
-        pauseBtn.zPosition = 25
-        addChild(pauseBtn)
+    /// Left panel  = current score (time in chain mode, food count in survival).
+    /// Right panel = personal best (best time in chain, best food count in survival).
+    /// Both are pixel boxes "tied" to the top of their seaweed stalk by a thin rope.
+    /// Pause is now triggered by tapping the lobster — no standalone pause box.
+    private func buildSidePanels() {
+        let seaweedSegments = 14
+        let segH: CGFloat   = 8
+        let baseY           = -H/2 + 28
+        let stalkTopY       = baseY + CGFloat(seaweedSegments) * segH   // top of stalk
+        let panelW: CGFloat = 72
+        let panelH: CGFloat = 52
+        let ropeLen: CGFloat = 10   // pixels of rope between stalk top and box bottom
 
-        let bg = px(52, 52, fill: Px.navy, stroke: Px.steel, sw: 2)
-        bg.name = "pauseBtnBg"
-        pauseBtn.addChild(bg)
+        let leftX  = -W * 0.38
+        let rightX =  W * 0.38
 
-        for x: CGFloat in [-7, 7] {
-            let bar = px(6, 18, fill: Px.white)
-            bar.position = CGPoint(x: x, y: 0)
-            bar.name     = "pauseBar"
-            pauseBtn.addChild(bar)
+        // ── Rope from stalk top to box ──
+        for side: CGFloat in [-1, 1] {
+            let xPos = side < 0 ? leftX : rightX
+            for r in 0..<Int(ropeLen / 4) {
+                let bead = px(2, 4, fill: Px.darkSteel)
+                bead.position  = CGPoint(x: xPos, y: stalkTopY + CGFloat(r) * 4 + 2)
+                bead.zPosition = 4
+                addChild(bead)
+            }
+        }
+
+        let boxY = stalkTopY + ropeLen + panelH / 2
+
+        // ── LEFT: Current score box (amber border) ──
+        let currentBox         = SKNode()
+        currentBox.position     = CGPoint(x: leftX, y: boxY)
+        currentBox.zPosition    = 19
+        addChild(currentBox)
+
+        let curBg = px(panelW, panelH, fill: Px.navy, stroke: Px.amber, sw: 2)
+        currentBox.addChild(curBg)
+
+        let curTitle = pixelLabel(loc.nowLabel, size: 9, color: Px.amber)
+        curTitle.position  = CGPoint(x: 0, y: 12)
+        currentBox.addChild(curTitle)
+
+        currentScoreLabel           = pixelLabel(currentScoreText, size: 11, color: Px.white)
+        currentScoreLabel.position   = CGPoint(x: 0, y: -6)
+        currentScoreLabel.zPosition  = 20
+        currentBox.addChild(currentScoreLabel)
+
+        // ── RIGHT: Best record box (gold border) ──
+        let recordBox          = SKNode()
+        recordBox.position      = CGPoint(x: rightX, y: boxY)
+        recordBox.zPosition     = 19
+        addChild(recordBox)
+
+        let recBg = px(panelW, panelH, fill: Px.navy, stroke: Px.survivalGold, sw: 2)
+        recordBox.addChild(recBg)
+
+        let recTitle = pixelLabel(loc.bestLabel, size: 9, color: Px.survivalGold)
+        recTitle.position  = CGPoint(x: 0, y: 12)
+        recordBox.addChild(recTitle)
+
+        recordLabel           = pixelLabel(bestText, size: 11, color: Px.white)
+        recordLabel.position   = CGPoint(x: 0, y: -6)
+        recordLabel.zPosition  = 20
+        recordBox.addChild(recordLabel)
+
+        // ── Pause indicator drawn on the lobster body (small ‖ bars) ──
+        // Visible at all times; tapping the lobster toggles pause.
+        buildPauseIndicator()
+    }
+
+    /// Draws the pause "‖" icon as two small pixel bars centred on the lobster body.
+    /// These are children of lobsterContainer so they move/scale with it.
+    private func buildPauseIndicator() {
+        pauseIndicator           = SKNode()
+        pauseIndicator.position   = CGPoint(x: 0, y: bodyH/2 - 10)
+        pauseIndicator.zPosition  = 20
+        lobsterContainer.addChild(pauseIndicator)
+
+        for xOff: CGFloat in [-5, 5] {
+            let bar = px(4, 10, fill: Px.white.withAlphaComponent(0.55))
+            bar.position = CGPoint(x: xOff, y: 0)
+            pauseIndicator.addChild(bar)
         }
     }
+
+    /// Live score text shown in the LEFT seaweed box.
+    private var currentScoreText: String {
+        switch gameMode {
+        case .chain:    return String(format: "%.1fs", elapsedTime)
+        case .survival: return "\(foodEaten)"
+        }
+    }
+
+    /// Current best to display in the RIGHT record box (mode-sensitive).
+    private var bestText: String {
+        switch gameMode {
+        case .chain:
+            if let t = bestChainTime { return String(format: "%.1fs", t) }
+            return loc.noBest
+        case .survival:
+            if let f = bestSurvivalFood { return "\(f)" }
+            return loc.noBest
+        }
+    }
+
+    // MARK: - Pause indicator (drawn on the lobster; tap lobster to toggle)
 
     // MARK: - Pause / Resume
 
@@ -635,9 +745,12 @@ class GameScene: SKScene {
         isPaused_game.toggle()
         if isPaused_game {
             pauseElapsedTime()
+            bgMusicPlayer?.pause()
+            playSFX("sfx_pause.wav")
             showPauseOverlay()
         } else {
             resumeElapsedTime()
+            bgMusicPlayer?.play()
             hidePauseOverlay()
         }
         self.speed = isPaused_game ? 0 : 1
@@ -659,17 +772,17 @@ class GameScene: SKScene {
         panel.zPosition = 1
         overlay.addChild(panel)
 
-        let title = pixelLabel("PAUSED", size: 22, color: Px.white)
+        let title = pixelLabel(loc.pausedTitle, size: 22, color: Px.white)
         title.position  = CGPoint(x: 0, y: 58)
         title.zPosition = 2
         overlay.addChild(title)
 
-        let resumeBtn = makePixelButton(text: "RESUME", width: 160, height: 38, y: 10,
+        let resumeBtn = makePixelButton(text: loc.resumeLabel, width: 160, height: 38, y: 10,
                                         fill: SKColor(red: 0.12, green: 0.38, blue: 0.68, alpha: 1))
         resumeBtn.name = "resumeBtn"
         overlay.addChild(resumeBtn)
 
-        let quitBtn = makePixelButton(text: "QUIT", width: 160, height: 38, y: -40,
+        let quitBtn = makePixelButton(text: loc.quitLabel, width: 160, height: 38, y: -40,
                                        fill: SKColor(red: 0.52, green: 0.10, blue: 0.08, alpha: 1))
         quitBtn.name = "quitBtn"
         overlay.addChild(quitBtn)
@@ -677,20 +790,23 @@ class GameScene: SKScene {
         addChild(overlay)
         pauseOverlay = overlay
 
-        pauseBtn.children.filter { $0.name == "pauseBar" }.forEach { $0.isHidden = true }
-        for (j, w): (Int, CGFloat) in [(0, 14), (1, 10), (2, 6), (3, 2)] {
-            let bar = px(w, 4, fill: Px.white)
-            bar.position = CGPoint(x: 2 + CGFloat(j) * 1, y: -CGFloat(j) * 5 + 6)
-            bar.name     = "playIcon"
-            pauseBtn.addChild(bar)
+        // On the lobster: swap ‖ bars → ▶ play-triangle indicator
+        pauseIndicator?.children.filter { $0.name == "pauseBar2" }.forEach { $0.isHidden = true }
+        pauseIndicator?.children.forEach { $0.isHidden = true }
+        for (j, w): (Int, CGFloat) in [(0, 12), (1, 8), (2, 4), (3, 2)] {
+            let tri = px(w, 4, fill: Px.white.withAlphaComponent(0.75))
+            tri.position = CGPoint(x: CGFloat(j) * 2 - 4, y: -CGFloat(j) * 3 + 4)
+            tri.name     = "playTriangle"
+            pauseIndicator?.addChild(tri)
         }
     }
 
     private func hidePauseOverlay() {
         pauseOverlay?.removeFromParent()
         pauseOverlay = nil
-        pauseBtn.children.filter { $0.name == "playIcon" }.forEach { $0.removeFromParent() }
-        pauseBtn.children.filter { $0.name == "pauseBar" }.forEach { $0.isHidden = false }
+        // Restore ‖ bars on the lobster
+        pauseIndicator?.children.filter { $0.name == "playTriangle" }.forEach { $0.removeFromParent() }
+        pauseIndicator?.children.forEach { $0.isHidden = false }
     }
 
     private func makePixelButton(text: String, width: CGFloat, height: CGFloat, y: CGFloat,
@@ -714,7 +830,15 @@ class GameScene: SKScene {
         guard let t = touches.first else { return }
         let pos = t.location(in: self)
 
-        if pauseBtn.contains(pos) { togglePause(); return }
+        // Tap the lobster body to toggle pause (use a generous hit area around lobsterContainer)
+        let lobsterPos  = lobsterContainer.position
+        let hitRadius: CGFloat = bodyW * 0.9
+        let dx = pos.x - lobsterPos.x
+        let dy = pos.y - lobsterPos.y
+        if abs(dx) <= hitRadius && abs(dy) <= hitRadius {
+            togglePause()
+            return
+        }
 
         if isPaused_game {
             if let overlay = pauseOverlay {
@@ -730,6 +854,7 @@ class GameScene: SKScene {
                     self.speed    = 1
                     hidePauseOverlay()
                     removeAction(forKey: "timer")
+                    stopBackgroundMusic()
                     after(0.05) { [weak self] in
                         self?.gameDelegate?.gameDidQuitToTitle()
                     }
@@ -787,14 +912,16 @@ class GameScene: SKScene {
         case (.food, _):
             obj.isResolved = true
             obj.removeAllActions()
-            flashText("MISS!", color: Px.amber)
+            flashText(loc.missText, color: Px.amber)
+            playSFX("sfx_whoosh.wav")
             flyAway(obj, dirVector: swipeVec, spin: true)
             spawnNextObject()
 
         case (.garbage, .right):
             obj.isResolved = true
             obj.removeAllActions()
-            flashText("CAUGHT!", color: Px.green)
+            flashText(loc.caughtText, color: Px.green)
+            playSFX("sfx_net.wav")
             netCatchAnimation(obj)
             spawnNextObject()
 
@@ -809,7 +936,8 @@ class GameScene: SKScene {
         case (.bomb, .left):
             obj.isResolved = true
             obj.removeAllActions()
-            flashText("SAVED!", color: Px.green)
+            flashText(loc.savedText, color: Px.green)
+            playSFX("sfx_catch.wav")
             handCatchAnimation(obj)
             spawnNextObject()
 
@@ -885,9 +1013,9 @@ class GameScene: SKScene {
 
     private func showHint(for type: ObjectType) {
         switch type {
-        case .food:    hintLabel.text = "SWIPE DOWN to eat!"
-        case .garbage: hintLabel.text = "SWIPE RIGHT → net catches it!"
-        case .bomb:    hintLabel.text = "SWIPE LEFT ← hand takes it!"
+        case .food:    hintLabel.text = loc.hintFood
+        case .garbage: hintLabel.text = loc.hintGarbage
+        case .bomb:    hintLabel.text = loc.hintBomb
         }
     }
 
@@ -895,7 +1023,8 @@ class GameScene: SKScene {
 
     private func autoEatFood(_ obj: FallingObjectNode) {
         foodEaten += 1
-        flashText("+1 NOM!", color: Px.green)
+        flashText(loc.nomText, color: Px.green)
+        playSFX("sfx_chomp.wav")
         chompAnimation(obj)
         foodGlowPop()
 
@@ -906,8 +1035,8 @@ class GameScene: SKScene {
             checkChainBreak()
             if foodEaten < GameConstants.chainBreakTarget { spawnNextObject() }
         } else {
-            // Survival: just update count label and keep going
-            progressLabel.text = "FOOD: \(foodEaten)"
+            progressLabel.text = "\(loc.food): \(foodEaten)"
+            currentScoreLabel?.text = currentScoreText   // survival: update food count
             spawnNextObject()
         }
     }
@@ -921,11 +1050,13 @@ class GameScene: SKScene {
                 progressLabel.text = "\(foodEaten)/\(GameConstants.chainBreakTarget)"
                 strainChain()
             } else {
-                progressLabel.text = "FOOD: \(foodEaten)"
+                progressLabel.text = "\(loc.food): \(foodEaten)"
+                currentScoreLabel?.text = currentScoreText   // survival: update food count
             }
         }
         isControlLocked = true
-        flashText("BLECH! -1", color: Px.orange)
+        flashText(loc.bletchText, color: Px.orange)
+        playSFX("sfx_bletch.wav")
         garbageDisgustAnimation(obj)
         after(GameConstants.vomitDuration) { [weak self] in
             self?.isControlLocked = false
@@ -937,6 +1068,8 @@ class GameScene: SKScene {
         isControlLocked = true
         removeAction(forKey: "timer")
         elapsedTime = currentElapsed()
+        playSFX("sfx_boom.wav")
+        stopBackgroundMusic()
         bombExplosionAnimation(obj)
         after(1.2) { [weak self] in
             guard let s = self else { return }
@@ -972,7 +1105,9 @@ class GameScene: SKScene {
         spawnPixelSparks(at: CGPoint(x: 0, y: lobsterY - bodyH/2 - 14), color: Px.amber,  count: 20)
         spawnPixelSparks(at: CGPoint(x: 0, y: lobsterY - bodyH/2 - 14), color: Px.orange, count: 14)
 
-        flashText("FREE!!!", color: Px.amber)
+        playSFX("sfx_win.wav")
+        stopBackgroundMusic()
+        flashText(loc.freeText, color: Px.amber)
         after(0.5) { [weak self] in self?.showGoodbyeLabel() }
 
         let wait   = SKAction.wait(forDuration: 0.60)
@@ -989,7 +1124,7 @@ class GameScene: SKScene {
     }
 
     private func showGoodbyeLabel() {
-        let lbl = pixelLabel("THANK YOU, GOODBYE!", size: 16, color: Px.white)
+        let lbl = pixelLabel(loc.goodbyeText, size: 16, color: Px.white)
         lbl.position  = CGPoint(x: 0, y: lobsterY + bodyH + 44)
         lbl.zPosition = 25
         lbl.alpha     = 0
@@ -1093,7 +1228,7 @@ class GameScene: SKScene {
     }
 
     private func bombExplosionAnimation(_ obj: FallingObjectNode) {
-        flashText("BOOM!", color: Px.red)
+        flashText(loc.boomText, color: Px.red)
 
         obj.run(SKAction.sequence([
             SKAction.scale(to: 3.0, duration: 0.10),
@@ -1320,7 +1455,7 @@ class GameScene: SKScene {
         progressBarFill = makeFill(bw: bw, bh: bh, ratio: ratio)
         addChild(progressBarFill!)
         if let cap = childNode(withName: "barCaption") as? SKLabelNode {
-            cap.text = "CHAIN: \(max(foodEaten, 0))/\(GameConstants.chainBreakTarget)"
+            cap.text = "\(loc.chainLabel): \(max(foodEaten, 0))/\(GameConstants.chainBreakTarget)"
         }
     }
 
@@ -1328,6 +1463,41 @@ class GameScene: SKScene {
         guard !isPaused_game else { return }
         elapsedTime     = currentElapsed()
         timerLabel.text = String(format: "%.1fs", elapsedTime)
+        // Keep left seaweed box in sync (chain = time, survival = food count)
+        currentScoreLabel?.text = currentScoreText
+    }
+
+    // MARK: - Sound
+
+    /// Plays a looping background music track if "bg_music" (mp3/m4a/wav) exists in the bundle.
+    private func startBackgroundMusic() {
+        let candidates = ["bg_music.mp3", "bg_music.m4a", "bg_music.wav", "bg_music.caf"]
+        for name in candidates {
+            if let url = Bundle.main.url(forResource: name.components(separatedBy: ".").first,
+                                         withExtension: name.components(separatedBy: ".").last) {
+                do {
+                    bgMusicPlayer = try AVAudioPlayer(contentsOf: url)
+                    bgMusicPlayer?.numberOfLoops = -1  // loop forever
+                    bgMusicPlayer?.volume = 0.35
+                    bgMusicPlayer?.play()
+                } catch { /* file found but unreadable */ }
+                break
+            }
+        }
+    }
+
+    private func stopBackgroundMusic() {
+        bgMusicPlayer?.stop()
+        bgMusicPlayer = nil
+    }
+
+    /// Plays a short SFX. Filename must include extension, e.g. "chomp.wav".
+    /// Silently does nothing if the file is missing (so the game works without audio assets).
+    private func playSFX(_ filename: String) {
+        let parts = filename.components(separatedBy: ".")
+        guard parts.count == 2,
+              Bundle.main.url(forResource: parts[0], withExtension: parts[1]) != nil else { return }
+        run(SKAction.playSoundFileNamed(filename, waitForCompletion: false))
     }
 
     // MARK: - Utilities
