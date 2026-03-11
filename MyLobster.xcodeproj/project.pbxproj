@@ -6,8 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		FD628AA22F60FB240009D0B9 /* SpriteKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FD628AA02F60FB240009D0B9 /* SpriteKit.framework */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		FD628A922F60FB230009D0B9 /* MyLobster.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyLobster.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FD628AA02F60FB240009D0B9 /* SpriteKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SpriteKit.framework; path = System/Library/Frameworks/SpriteKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -23,6 +28,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FD628AA22F60FB240009D0B9 /* SpriteKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -33,6 +39,7 @@
 			isa = PBXGroup;
 			children = (
 				FD628A942F60FB230009D0B9 /* MyLobster */,
+				FD628AA12F60FB240009D0B9 /* Frameworks */,
 				FD628A932F60FB230009D0B9 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -43,6 +50,14 @@
 				FD628A922F60FB230009D0B9 /* MyLobster.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		FD628AA12F60FB240009D0B9 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				FD628AA02F60FB240009D0B9 /* SpriteKit.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
