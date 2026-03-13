@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @State private var screen: AppScreen = .title
@@ -11,6 +12,10 @@ struct ContentView: View {
     @AppStorage("language")         private var langRaw:             String = AppLanguage.zh.rawValue
     @AppStorage("bestChainTime")    private var bestChainTimeRaw:    Double = -1
     @AppStorage("bestSurvivalFood") private var bestSurvivalFoodRaw: Int    = -1
+    @AppStorage("tutorialDone")     private var tutorialDone:        Bool   = false
+
+    // AdManager is a plain NSObject — keep it alive for the lifetime of ContentView.
+    @State private var adManager = AdManager()
 
     private var language: AppLanguage { AppLanguage(rawValue: langRaw) ?? .zh }
 
@@ -34,8 +39,11 @@ struct ContentView: View {
                     language: language,
                     bestChainTime: bestChainTime,
                     bestSurvivalFood: bestSurvivalFood,
+                    isTutorialDone: tutorialDone,
                     onGameEnd: handleGameEnd,
-                    onQuitToTitle: goToTitle
+                    onQuitToTitle: goToTitle,
+                    onTutorialDone: { tutorialDone = true },
+                    onWillQuit: handleWillQuit
                 )
                 .transition(.opacity)
 
@@ -70,6 +78,13 @@ struct ContentView: View {
         screen = .title
     }
 
+    /// Called just before the player quits to title — updates survival best score if applicable.
+    private func handleWillQuit(foodEaten: Int, mode: GameMode) {
+        if mode == .survival && foodEaten > bestSurvivalFoodRaw {
+            bestSurvivalFoodRaw = foodEaten
+        }
+    }
+
     private func handleGameEnd(result: GameResult) {
         // Persist personal bests
         switch result.mode {
@@ -84,7 +99,27 @@ struct ContentView: View {
                 bestSurvivalFoodRaw = result.foodEaten
             }
         }
-        screen = .result(result)
+
+        // Show interstitial ad, then go to result screen
+        showAdThen { screen = .result(result) }
+    }
+
+    // MARK: - Ad helper
+
+    /// Notifies AdManager that a game finished; it decides whether to show an ad.
+    /// Always calls `action` — either after the ad is dismissed, or immediately.
+    private func showAdThen(_ action: @escaping () -> Void) {
+        guard let rootVC = UIApplication.shared
+            .connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first?
+            .windows
+            .first(where: { $0.isKeyWindow })?
+            .rootViewController else {
+            action()
+            return
+        }
+        adManager.onGameFinished(from: rootVC, completion: action)
     }
 }
 

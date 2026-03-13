@@ -20,7 +20,9 @@ import AVFoundation
 
 protocol GameSceneDelegate: AnyObject {
     func gameDidEnd(result: GameResult)
-    func gameDidQuitToTitle()          // ← NEW: quit goes back to title, not result
+    func gameDidQuitToTitle()                              // quit goes back to title, not result
+    func gameWillQuit(foodEaten: Int, mode: GameMode)     // called before quit so caller can update best score
+    func tutorialDidComplete()                             // persist tutorial-done flag in AppStorage
 }
 
 // MARK: - Pixel palette
@@ -140,8 +142,9 @@ class FallingObjectNode: SKNode {
 class GameScene: SKScene {
 
     // MARK: Configuration
-    var gameMode: GameMode   = .chain
+    var gameMode: GameMode    = .chain
     var language: AppLanguage = .zh   // passed from ContentView; controls all in-game text
+    var skipTutorial: Bool    = false // set true after first-play tutorial completes
 
     // Personal bests (passed in from ContentView so the record box can show them)
     var bestChainTime:    TimeInterval? = nil
@@ -150,13 +153,22 @@ class GameScene: SKScene {
     // MARK: Delegate
     weak var gameDelegate: GameSceneDelegate?
 
+    // MARK: Tutorial state machine
+    // Steps: 0=food, 1=garbage, 2=bomb, 3=tapToPause, 4=done (normal play)
+    private enum TutStep { case food, garbage, bomb, tapToPause, done }
+    private var tutStep: TutStep = .food
+    // When true the current object is frozen in place waiting for the correct gesture
+    private var isTutorialFrozen = false
+    // Overlay node shown during each tutorial step
+    private var tutOverlay: SKNode?
+
     // MARK: State
     private var foodEaten       = 0
     private var garbageMistakes = 0
     private var isControlLocked = false
     private var isPaused_game   = false
-    private var isTutorial      = true
-    private var tutorialIndex   = 0
+    private var isGameOver      = false   // set true on bomb/win; blocks all further outcomes
+    private var spawnLaneIndex  = 0       // cycles through lanes independently of activeObjects.count
 
     // Timer — we track elapsed manually so pause truly freezes it
     private var pauseStartTime: Date?
@@ -178,20 +190,25 @@ class GameScene: SKScene {
     private var mouthOpenPath:      CGPath!
     private var chainLinks:         [SKNode] = []
     private var progressBarFill:    SKShapeNode?
-    private var timerLabel:         SKLabelNode!
-    private var progressLabel:      SKLabelNode!
     private var feedbackLabel:      SKLabelNode!
     private var hintLabel:          SKLabelNode!
     private var currentScoreLabel:  SKLabelNode!   // left seaweed box – live score
     private var recordLabel:        SKLabelNode!   // right seaweed box – best score
     private var pauseIndicator:     SKNode!        // "||" icon drawn on the lobster body
-    private var currentObject:      FallingObjectNode?
+    // Tutorial uses a single object; normal play allows multiple concurrent objects.
+    private var activeObjects:      [FallingObjectNode] = []
+    // Convenience: during tutorial the one tutorial object is always activeObjects.first
+    private var currentObject: FallingObjectNode? { activeObjects.first }
 
     // Convenience localisation accessor
     private var loc: L { L(lang: language) }
 
     // MARK: Audio
     private var bgMusicPlayer: AVAudioPlayer?
+    // Pre-loaded SFX players — keyed by filename (no extension).
+    // Using AVAudioPlayer instead of SKAction.playSoundFileNamed eliminates
+    // the first-play decode stutter because players are prepared at scene load.
+    private var sfxPlayers: [String: AVAudioPlayer] = [:]
 
     // MARK: Swipe tracking
     private var swipeStart     = CGPoint.zero
@@ -203,15 +220,13 @@ class GameScene: SKScene {
     private var W: CGFloat { size.width  }
     private var H: CGFloat { size.height }
 
-    // In chain mode the lobster sits a bit higher (chain hangs below).
-    // In survival mode the lobster sits on the sand floor.
-    private var lobsterY: CGFloat {
-        gameMode == .survival ? (-H * 0.42 + bodyH / 2) : -H * 0.12
-    }
-    private var spawnY:       CGFloat { H * 0.48 }
-    private var barY:         CGFloat { H * 0.36 }
-    private var hintY:        CGFloat { -H * 0.43 }
-    private var chainBottomY: CGFloat { -H * 0.47 }
+    // Both modes: lobster sits near the sand floor.
+    private var lobsterY: CGFloat { -H * 0.42 + bodyH / 2 }
+    private var spawnY:   CGFloat { H * 0.48 }
+    private var barY:     CGFloat { H * 0.36 }
+    private var hintY:    CGFloat { -H * 0.455 }
+    // Chain: floor anchor plate sits on the sand, chain links connect floor → lobster tail
+    private var chainFloorY: CGFloat { -H / 2 + 22 }   // just above the sand floor
 
     private let bodyW: CGFloat = 56
     private let bodyH: CGFloat = 60
@@ -230,12 +245,41 @@ class GameScene: SKScene {
         buildHintLabel()
         gameStartTime = Date()
         totalPausedSeconds = 0
+        if skipTutorial { tutStep = .done }
+        preloadAllSFX()   // warm up audio decoder to prevent first-play freeze
         startBackgroundMusic()
         spawnNextObject()
         run(SKAction.repeatForever(SKAction.sequence([
             SKAction.wait(forDuration: 0.05),
             SKAction.run { [weak self] in self?.tickTimer() }
         ])), withKey: "timer")
+    }
+
+    /// Loads all SFX files into AVAudioPlayer instances and calls prepareToPlay()
+    /// so the audio hardware and codec are initialised at scene load, not at
+    /// first gameplay use.  Subsequent calls to playSFX() reuse these players,
+    /// completely eliminating the first-play decode freeze.
+    private func preloadAllSFX() {
+        let sfxFiles = [
+            "sfx_chomp.m4a", "sfx_net.m4a", "sfx_catch.m4a",
+            "sfx_bletch.m4a", "sfx_boom.m4a", "sfx_win.m4a",
+            "sfx_whoosh.m4a", "sfx_pause.m4a"
+        ]
+        for filename in sfxFiles {
+            let parts = filename.components(separatedBy: ".")
+            guard parts.count == 2 else { continue }
+            let base = parts[0]
+            let ext  = parts[1]
+            let url  = Bundle.main.url(forResource: base, withExtension: ext,
+                                       subdirectory: "Sounds")
+                    ?? Bundle.main.url(forResource: base, withExtension: ext)
+            guard let url else { continue }
+            if let player = try? AVAudioPlayer(contentsOf: url) {
+                player.volume = 0.85
+                player.prepareToPlay()   // pre-buffers — no audible sound yet
+                sfxPlayers[base] = player
+            }
+        }
     }
 
     // MARK: - Background (pixel ocean bands + dithered bubbles)
@@ -479,22 +523,36 @@ class GameScene: SKScene {
     }
 
     // MARK: - Chain (chain mode only)
+    // The chain anchors to the sandy floor and connects upward to the lobster's tail.
 
     private func buildChain() {
-        let startY  = lobsterY - bodyH/2 - 12
-        let count   = 10
-        let spacing = (startY - chainBottomY) / CGFloat(count)
+        // Floor anchor plate — bolted into the sand
+        let plate = px(36, 14, fill: Px.darkSteel, stroke: Px.steel, sw: 1.5)
+        plate.position  = CGPoint(x: 0, y: chainFloorY)
+        plate.zPosition = 8
+        addChild(plate)
+        for xOff: CGFloat in [-9, 0, 9] {
+            let bolt = px(4, 4, fill: Px.steel)
+            bolt.position = CGPoint(x: xOff, y: 0)
+            plate.addChild(bolt)
+        }
+
+        // Chain links — rise from floor plate to lobster tail
+        let bottomY = chainFloorY + 10
+        let topY    = lobsterY - bodyH / 2 - 4
+        let count   = 8
+        let spacing = (topY - bottomY) / CGFloat(count)
 
         for i in 0..<count {
             let container = SKNode()
-            container.position = CGPoint(x: 0, y: startY - CGFloat(i) * spacing)
+            container.position = CGPoint(x: 0, y: bottomY + CGFloat(i) * spacing)
             container.zPosition = 8
             addChild(container)
             chainLinks.append(container)
 
             let isEven = (i % 2 == 0)
-            let ow: CGFloat = isEven ? 22 : 14
-            let oh: CGFloat = isEven ? 14 : 24
+            let ow: CGFloat = isEven ? 20 : 12
+            let oh: CGFloat = isEven ? 12 : 22
 
             let outer = px(ow, oh, fill: Px.steel, stroke: Px.darkSteel, sw: 2)
             container.addChild(outer)
@@ -506,21 +564,6 @@ class GameScene: SKScene {
             hl.zPosition = 2
             container.addChild(hl)
         }
-
-        let plate = px(30, 12, fill: Px.darkSteel, stroke: Px.steel, sw: 1.5)
-        plate.position  = CGPoint(x: 0, y: chainBottomY)
-        plate.zPosition = 8
-        addChild(plate)
-        for xOff: CGFloat in [-7, 7] {
-            let bolt = px(4, 4, fill: Px.steel)
-            bolt.position = CGPoint(x: xOff, y: 0)
-            plate.addChild(bolt)
-        }
-
-        let cap = pixelLabel(loc.chainedText, size: 9, color: Px.dimWhite)
-        cap.position  = CGPoint(x: 0, y: chainBottomY - 16)
-        cap.zPosition = 8
-        addChild(cap)
     }
 
     private func strainChain() {
@@ -539,7 +582,7 @@ class GameScene: SKScene {
 
         if let idx = GameConstants.chainCrackMilestones.firstIndex(of: foodEaten),
            idx < chainLinks.count {
-            let snap = chainLinks[idx]
+            let snap = chainLinks[chainLinks.count - 1 - idx]   // crack from top downward
             spawnPixelSparks(at: snap.position, color: Px.amber, count: 10)
             snap.run(SKAction.sequence([
                 SKAction.group([
@@ -572,42 +615,21 @@ class GameScene: SKScene {
         return baseY + CGFloat(segments) * segH
     }
 
-    // MARK: - HUD (timer centred top + progress label + side panels)
+    // MARK: - HUD (side panels only — top timer/food box removed)
 
     private func buildHUD() {
-        // Timer — centred at top (chain mode shows time; survival mode shows time too for personal ref)
-        let tBg = px(94, 28, fill: Px.navy, stroke: Px.steel, sw: 2)
-        tBg.position  = CGPoint(x: 0, y: H * 0.44)
-        tBg.zPosition = 19
-        addChild(tBg)
-
-        timerLabel           = pixelLabel("0.0s", size: 14, color: Px.white)
-        timerLabel.position   = CGPoint(x: 0, y: H * 0.44 - 5)
-        timerLabel.zPosition  = 20
-        addChild(timerLabel)
-
-        // Progress label — centred just below timer
-        if gameMode == .chain {
-            progressLabel = pixelLabel("0/\(GameConstants.chainBreakTarget)",
-                                       size: 13, color: Px.white)
-        } else {
-            progressLabel = pixelLabel("\(loc.food): 0", size: 13, color: Px.survivalGold)
-        }
-        progressLabel.position  = CGPoint(x: 0, y: H * 0.44 - 26)
-        progressLabel.zPosition = 20
-        addChild(progressLabel)
-
-        feedbackLabel          = pixelLabel("", size: 22, color: Px.white)
-        feedbackLabel.position  = CGPoint(x: 0, y: lobsterY + bodyH + 32)
+        // Feedback flash label above the lobster — bigger for visibility
+        feedbackLabel          = pixelLabel("", size: 28, color: Px.white)
+        feedbackLabel.position  = CGPoint(x: 0, y: lobsterY + bodyH + 42)
         feedbackLabel.zPosition = 22
         addChild(feedbackLabel)
 
-        // Build the seaweed-tied side panels (pause left, record right)
+        // Build the seaweed-tied side panels (current score left, best record right)
         buildSidePanels()
     }
 
     private func buildHintLabel() {
-        hintLabel          = pixelLabel("", size: 11, color: Px.dimWhite)
+        hintLabel          = pixelLabel("", size: 13, color: Px.dimWhite)
         hintLabel.position  = CGPoint(x: 0, y: hintY)
         hintLabel.zPosition = 20
         addChild(hintLabel)
@@ -624,12 +646,12 @@ class GameScene: SKScene {
         let segH: CGFloat   = 8
         let baseY           = -H/2 + 28
         let stalkTopY       = baseY + CGFloat(seaweedSegments) * segH   // top of stalk
-        let panelW: CGFloat = 72
-        let panelH: CGFloat = 52
+        let panelW: CGFloat = 84
+        let panelH: CGFloat = 64
         let ropeLen: CGFloat = 10   // pixels of rope between stalk top and box bottom
 
-        let leftX  = -W * 0.38
-        let rightX =  W * 0.38
+        let leftX  = -W * 0.36
+        let rightX =  W * 0.36
 
         // ── Rope from stalk top to box ──
         for side: CGFloat in [-1, 1] {
@@ -653,12 +675,12 @@ class GameScene: SKScene {
         let curBg = px(panelW, panelH, fill: Px.navy, stroke: Px.amber, sw: 2)
         currentBox.addChild(curBg)
 
-        let curTitle = pixelLabel(loc.nowLabel, size: 9, color: Px.amber)
-        curTitle.position  = CGPoint(x: 0, y: 12)
+        let curTitle = pixelLabel(loc.nowLabel, size: 11, color: Px.amber)
+        curTitle.position  = CGPoint(x: 0, y: 16)
         currentBox.addChild(curTitle)
 
-        currentScoreLabel           = pixelLabel(currentScoreText, size: 11, color: Px.white)
-        currentScoreLabel.position   = CGPoint(x: 0, y: -6)
+        currentScoreLabel           = pixelLabel(currentScoreText, size: 15, color: Px.white)
+        currentScoreLabel.position   = CGPoint(x: 0, y: -4)
         currentScoreLabel.zPosition  = 20
         currentBox.addChild(currentScoreLabel)
 
@@ -671,12 +693,12 @@ class GameScene: SKScene {
         let recBg = px(panelW, panelH, fill: Px.navy, stroke: Px.survivalGold, sw: 2)
         recordBox.addChild(recBg)
 
-        let recTitle = pixelLabel(loc.bestLabel, size: 9, color: Px.survivalGold)
-        recTitle.position  = CGPoint(x: 0, y: 12)
+        let recTitle = pixelLabel(loc.bestLabel, size: 11, color: Px.survivalGold)
+        recTitle.position  = CGPoint(x: 0, y: 16)
         recordBox.addChild(recTitle)
 
-        recordLabel           = pixelLabel(bestText, size: 11, color: Px.white)
-        recordLabel.position   = CGPoint(x: 0, y: -6)
+        recordLabel           = pixelLabel(bestText, size: 15, color: Px.white)
+        recordLabel.position   = CGPoint(x: 0, y: -4)
         recordLabel.zPosition  = 20
         recordBox.addChild(recordLabel)
 
@@ -746,12 +768,14 @@ class GameScene: SKScene {
         if isPaused_game {
             pauseElapsedTime()
             bgMusicPlayer?.pause()
-            playSFX("sfx_pause.wav")
+            playSFX("sfx_pause.m4a")
+            removeAction(forKey: "spawnTimer")   // stop spawning while paused
             showPauseOverlay()
         } else {
             resumeElapsedTime()
             bgMusicPlayer?.play()
             hidePauseOverlay()
+            restartSpawnTimer()                  // resume spawning
         }
         self.speed = isPaused_game ? 0 : 1
     }
@@ -767,22 +791,22 @@ class GameScene: SKScene {
         dim.zPosition = 0
         overlay.addChild(dim)
 
-        let panel = px(240, 190, fill: Px.navy, stroke: Px.steel, sw: 3)
+        let panel = px(260, 210, fill: Px.navy, stroke: Px.steel, sw: 3)
         panel.position  = .zero
         panel.zPosition = 1
         overlay.addChild(panel)
 
-        let title = pixelLabel(loc.pausedTitle, size: 22, color: Px.white)
-        title.position  = CGPoint(x: 0, y: 58)
+        let title = pixelLabel(loc.pausedTitle, size: 28, color: Px.white)
+        title.position  = CGPoint(x: 0, y: 66)
         title.zPosition = 2
         overlay.addChild(title)
 
-        let resumeBtn = makePixelButton(text: loc.resumeLabel, width: 160, height: 38, y: 10,
+        let resumeBtn = makePixelButton(text: loc.resumeLabel, width: 180, height: 46, y: 12,
                                         fill: SKColor(red: 0.12, green: 0.38, blue: 0.68, alpha: 1))
         resumeBtn.name = "resumeBtn"
         overlay.addChild(resumeBtn)
 
-        let quitBtn = makePixelButton(text: loc.quitLabel, width: 160, height: 38, y: -40,
+        let quitBtn = makePixelButton(text: loc.quitLabel, width: 180, height: 46, y: -46,
                                        fill: SKColor(red: 0.52, green: 0.10, blue: 0.08, alpha: 1))
         quitBtn.name = "quitBtn"
         overlay.addChild(quitBtn)
@@ -818,8 +842,8 @@ class GameScene: SKScene {
         let bg = px(width, height, fill: fill, stroke: Px.white.withAlphaComponent(0.35), sw: 2)
         btn.addChild(bg)
 
-        let lbl = pixelLabel(text, size: 15, color: Px.white)
-        lbl.position = CGPoint(x: 0, y: -5)
+        let lbl = pixelLabel(text, size: 18, color: Px.white)
+        lbl.position = CGPoint(x: 0, y: -6)
         btn.addChild(lbl)
         return btn
     }
@@ -835,7 +859,35 @@ class GameScene: SKScene {
         let hitRadius: CGFloat = bodyW * 0.9
         let dx = pos.x - lobsterPos.x
         let dy = pos.y - lobsterPos.y
-        if abs(dx) <= hitRadius && abs(dy) <= hitRadius {
+        let tappedLobster = abs(dx) <= hitRadius && abs(dy) <= hitRadius
+
+        // ── Tutorial: tapToPause step — waiting for lobster tap ─────────────────
+        if tutStep == .tapToPause && !isPaused_game {
+            if tappedLobster {
+                // Correct! Pause the game and show the "now tap to resume" message
+                isPaused_game = true
+                self.speed    = 0
+                pauseElapsedTime()
+                bgMusicPlayer?.pause()
+                playSFX("sfx_pause.m4a")   // play pause sound just like normal pause
+                handleTutorialPauseDone()   // shows dim + resume prompt (no regular overlay)
+            }
+            // Any tap that isn't the lobster is ignored in this step
+            return
+        }
+
+        // ── Tutorial: paused step — tap ANYWHERE to resume and finish tutorial ──
+        if tutStep == .tapToPause && isPaused_game {
+            isPaused_game = false
+            self.speed    = 1
+            resumeElapsedTime()
+            bgMusicPlayer?.play()
+            completeTutorial()
+            return
+        }
+
+        // ── Normal gameplay lobster tap (pause toggle) ───────────────────────────
+        if tappedLobster && tutStep == .done && !isGameOver {
             togglePause()
             return
         }
@@ -848,12 +900,14 @@ class GameScene: SKScene {
                     togglePause()
                 } else if let quit = overlay.childNode(withName: "quitBtn"),
                           quit.contains(lp) {
-                    // Resume elapsed accounting, then navigate to title (not result)
+                    // Notify caller of current score BEFORE quitting (best-score update)
+                    gameDelegate?.gameWillQuit(foodEaten: foodEaten, mode: gameMode)
                     resumeElapsedTime()
                     isPaused_game = false
                     self.speed    = 1
                     hidePauseOverlay()
                     removeAction(forKey: "timer")
+                    removeAction(forKey: "spawnTimer")
                     stopBackgroundMusic()
                     after(0.05) { [weak self] in
                         self?.gameDelegate?.gameDidQuitToTitle()
@@ -863,7 +917,9 @@ class GameScene: SKScene {
             return
         }
 
-        guard !isControlLocked else { return }
+        guard !isControlLocked, !isGameOver else { return }
+        // Don't start swipe tracking during tapToPause step
+        guard tutStep != .tapToPause else { return }
         swipeStart  = pos
         swipeTime   = Date()
         swipeActive = true
@@ -872,6 +928,8 @@ class GameScene: SKScene {
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let t = touches.first, swipeActive, !isPaused_game else { return }
         swipeActive = false
+        // Block swipe during the tapToPause tutorial step (no object on screen)
+        guard tutStep != .tapToPause else { return }
         guard Date().timeIntervalSince(swipeTime) <= GameConstants.maxSwipeRecognitionTime else { return }
 
         let end = t.location(in: self)
@@ -896,9 +954,64 @@ class GameScene: SKScene {
     //   BOMB:    ← = hand takes.  ↑→↓ = EXPLODE.
 
     private func handleSwipe(_ dir: Dir) {
-        guard let obj = currentObject, !obj.isResolved, !isControlLocked else { return }
+        guard !isGameOver else { return }
+        // During tutorial use the single tutorial object; in normal play target the
+        // lowest unresolved object (closest to lobster = most urgent to handle).
+        let obj: FallingObjectNode
+        if tutStep != .done {
+            guard let tut = currentObject, !tut.isResolved else { return }
+            obj = tut
+        } else {
+            guard let closest = activeObjects
+                .filter({ !$0.isResolved })
+                .min(by: { $0.position.y < $1.position.y }) else { return }
+            obj = closest
+        }
+        guard !isControlLocked else { return }
         let swipeVec = lastSwipeDelta
 
+        // ── Tutorial mode: only the CORRECT swipe is accepted; wrong swipes are ignored ──
+        if isTutorialFrozen {
+            let isCorrect: Bool
+            switch tutStep {
+            case .food:    isCorrect = (dir == .down)
+            case .garbage: isCorrect = (dir == .right)
+            case .bomb:    isCorrect = (dir == .left)
+            default:       isCorrect = false
+            }
+            guard isCorrect else { return }   // silently reject wrong-direction swipes
+
+            // Correct swipe — handle the object normally, then advance tutorial
+            obj.isResolved = true
+            obj.removeAllActions()
+            isTutorialFrozen = false
+
+            switch tutStep {
+            case .food:
+                obj.run(SKAction.sequence([
+                    SKAction.moveTo(y: lobsterY, duration: 0.07),
+                    SKAction.run { [weak self] in
+                        self?.autoEatFood(obj)
+                        self?.advanceTutorial()
+                    }
+                ]))
+            case .garbage:
+                flashText(loc.caughtText, color: Px.green)
+                playSFX("sfx_net.m4a")
+                netCatchAnimation(obj)
+                advanceTutorial()
+            case .bomb:
+                flashText(loc.savedText, color: Px.green)
+                playSFX("sfx_catch.m4a")
+                handCatchAnimation(obj)
+                advanceTutorial()
+            default:
+                break
+            }
+            return
+        }
+
+        // ── Normal gameplay swipe handling ────────────────────────────────────────
         switch (obj.objectType, dir) {
 
         case (.food, .down):
@@ -913,17 +1026,17 @@ class GameScene: SKScene {
             obj.isResolved = true
             obj.removeAllActions()
             flashText(loc.missText, color: Px.amber)
-            playSFX("sfx_whoosh.wav")
+            playSFX("sfx_whoosh.m4a")
             flyAway(obj, dirVector: swipeVec, spin: true)
-            spawnNextObject()
+            triggerSpawn()
 
         case (.garbage, .right):
             obj.isResolved = true
             obj.removeAllActions()
             flashText(loc.caughtText, color: Px.green)
-            playSFX("sfx_net.wav")
+            playSFX("sfx_net.m4a")
             netCatchAnimation(obj)
-            spawnNextObject()
+            triggerSpawn()
 
         case (.garbage, _):
             obj.isResolved = true
@@ -937,9 +1050,9 @@ class GameScene: SKScene {
             obj.isResolved = true
             obj.removeAllActions()
             flashText(loc.savedText, color: Px.green)
-            playSFX("sfx_catch.wav")
+            playSFX("sfx_catch.m4a")
             handCatchAnimation(obj)
-            spawnNextObject()
+            triggerSpawn()
 
         case (.bomb, _):
             obj.isResolved = true
@@ -954,7 +1067,11 @@ class GameScene: SKScene {
     // MARK: - Auto-resolve (object fell to lobster level without swipe)
 
     private func autoResolve(obj: FallingObjectNode) {
-        guard !obj.isResolved else { return }
+        guard !obj.isResolved, !isTutorialFrozen, !isGameOver else {
+            // Game already ended — silently discard any objects still in flight
+            finishObject(obj)
+            return
+        }
         obj.isResolved = true
         switch obj.objectType {
         case .food:    autoEatFood(obj)
@@ -963,44 +1080,107 @@ class GameScene: SKScene {
         }
     }
 
+    /// Called by animation callbacks once an object's visual effect is complete.
+    /// Removes it from the scene and the active list.
+    private func finishObject(_ obj: FallingObjectNode) {
+        activeObjects.removeAll { $0 === obj }
+        obj.removeFromParent()
+    }
+
     // MARK: - Spawn
 
+    /// Spawns one falling object immediately, adds it to `activeObjects`,
+    /// and (in normal play) starts/restarts the repeating spawn timer so the
+    /// next object drops after a fixed interval that shrinks as food is eaten.
     private func spawnNextObject() {
         guard !isPaused_game else { return }
 
+        // Tutorial steps 0-2 each spawn a fixed object type then freeze.
+        // Step 3 (tapToPause) spawns nothing. Normal play spawns random types.
         let type: ObjectType
-        if isTutorial {
-            if tutorialIndex < GameConstants.tutorialSequence.count {
-                type = GameConstants.tutorialSequence[tutorialIndex]
-                tutorialIndex += 1
-                showHint(for: type)
-            } else {
-                isTutorial     = false
-                hintLabel.text = ""
-                type = randomType()
-            }
-        } else {
-            type = randomType()
+        switch tutStep {
+        case .food:    type = .food
+        case .garbage: type = .garbage
+        case .bomb:    type = .bomb
+        case .tapToPause: return   // no object during the pause tutorial step
+        case .done:    type = randomType()
         }
 
         let obj = FallingObjectNode(type: type)
-        obj.position  = CGPoint(x: 0, y: spawnY)
+        // Spread objects across 3 fixed lanes so concurrent objects don't overlap.
+        // A dedicated counter (not activeObjects.count) ensures all lanes are visited.
+        // Tutorial objects always spawn dead-centre.
+        let xOffset: CGFloat
+        if tutStep == .done {
+            // Lanes: left, centre, right — evenly spaced inside the play area
+            let lanes: [CGFloat] = [-W * 0.22, 0, W * 0.22]
+            xOffset = lanes[spawnLaneIndex % lanes.count]
+            spawnLaneIndex += 1
+        } else {
+            xOffset = 0
+        }
+        obj.position  = CGPoint(x: xOffset, y: spawnY)
         obj.zPosition = 15
         addChild(obj)
-        currentObject = obj
+        activeObjects.append(obj)
 
         let speed    = GameConstants.fallSpeed(foodEaten: foodEaten, mode: gameMode)
-        // In survival the lobster sits on the floor so the fall distance shrinks as it grows.
-        // spawnY is fixed; lobsterY is also fixed but the lobster visually fills more
-        // of the screen. The actual collision y is still lobsterY so distance is constant —
-        // but the lobster body is huge, making it *feel* faster, which is the design intent.
         let distance = spawnY - lobsterY
         let duration = TimeInterval(distance / speed)
 
+        // Tutorial: fall to mid-screen then freeze for gesture prompt.
+        if tutStep != .done {
+            let tutFallDuration = duration * 0.55
+            obj.run(SKAction.sequence([
+                SKAction.moveTo(y: lobsterY + (spawnY - lobsterY) * 0.45,
+                                duration: tutFallDuration),
+                SKAction.run { [weak self] in self?.beginTutorialStep() }
+            ]))
+            // Don't start the repeating timer during tutorial
+            return
+        }
+
+        // Normal play: fall all the way to the lobster, then auto-resolve.
         obj.run(SKAction.sequence([
             SKAction.moveTo(y: lobsterY, duration: duration),
             SKAction.run { [weak self] in self?.autoResolve(obj: obj) }
         ]))
+
+        // Start (or restart) the repeating background timer.
+        restartSpawnTimer()
+    }
+
+    /// Restarts the repeating spawn timer using the current food-tier interval.
+    /// Call this after the first spawn and whenever the food tier changes.
+    private func restartSpawnTimer() {
+        removeAction(forKey: "spawnTimer")
+        guard tutStep == .done, !isPaused_game, !isGameOver else { return }
+
+        let interval = GameConstants.spawnInterval(foodEaten: foodEaten)
+        let action = SKAction.repeatForever(SKAction.sequence([
+            SKAction.wait(forDuration: interval),
+            SKAction.run { [weak self] in
+                guard let self, !self.isPaused_game,
+                      self.tutStep == .done, !self.isGameOver else { return }
+                self.spawnNextObject()
+            }
+        ]))
+        run(action, withKey: "spawnTimer")
+    }
+
+    /// Called after an object is handled. Spawns a replacement immediately
+    /// only if the screen is now empty (no other object still falling).
+    /// If something is already on screen the background timer covers the next one.
+    private func triggerSpawn() {
+        guard tutStep == .done, !isGameOver, !isPaused_game else { return }
+        let unresolved = activeObjects.filter { !$0.isResolved }
+        if unresolved.isEmpty { spawnNextObject() }
+    }
+
+    /// Removes a resolved/finished object from the active list.
+    private func removeActiveObject(_ obj: FallingObjectNode) {
+        activeObjects.removeAll { $0 === obj }
+        obj.removeFromParent()
     }
 
     private func randomType() -> ObjectType {
@@ -1011,34 +1191,26 @@ class GameScene: SKScene {
         return .bomb
     }
 
-    private func showHint(for type: ObjectType) {
-        switch type {
-        case .food:    hintLabel.text = loc.hintFood
-        case .garbage: hintLabel.text = loc.hintGarbage
-        case .bomb:    hintLabel.text = loc.hintBomb
-        }
-    }
-
     // MARK: - Outcomes
 
     private func autoEatFood(_ obj: FallingObjectNode) {
         foodEaten += 1
         flashText(loc.nomText, color: Px.green)
-        playSFX("sfx_chomp.wav")
-        chompAnimation(obj)
+        playSFX("sfx_chomp.m4a")
+        chompAnimation(obj)     // animation calls finishObject(obj) at end
         foodGlowPop()
 
         if gameMode == .chain {
             strainChain()
             refreshBar()
-            progressLabel.text = "\(foodEaten)/\(GameConstants.chainBreakTarget)"
-            checkChainBreak()
-            if foodEaten < GameConstants.chainBreakTarget { spawnNextObject() }
+            restartSpawnTimer()   // re-arm timer at new (possibly faster) tier
+            let inTutorialSwipeStep = (tutStep == .food || tutStep == .garbage || tutStep == .bomb)
+            if !inTutorialSwipeStep { checkChainBreak() }
         } else {
-            progressLabel.text = "\(loc.food): \(foodEaten)"
-            currentScoreLabel?.text = currentScoreText   // survival: update food count
-            spawnNextObject()
+            currentScoreLabel?.text = currentScoreText
+            restartSpawnTimer()   // re-arm timer at new tier for survival too
         }
+        triggerSpawn()
     }
 
     private func autoEatGarbage(_ obj: FallingObjectNode) {
@@ -1047,28 +1219,31 @@ class GameScene: SKScene {
             foodEaten -= 1
             if gameMode == .chain {
                 refreshBar()
-                progressLabel.text = "\(foodEaten)/\(GameConstants.chainBreakTarget)"
                 strainChain()
             } else {
-                progressLabel.text = "\(loc.food): \(foodEaten)"
-                currentScoreLabel?.text = currentScoreText   // survival: update food count
+                currentScoreLabel?.text = currentScoreText
             }
         }
         isControlLocked = true
         flashText(loc.bletchText, color: Px.orange)
-        playSFX("sfx_bletch.wav")
-        garbageDisgustAnimation(obj)
+        playSFX("sfx_bletch.m4a")
+        garbageDisgustAnimation(obj)   // animation calls finishObject(obj) at end
         after(GameConstants.vomitDuration) { [weak self] in
             self?.isControlLocked = false
-            self?.spawnNextObject()
+            self?.triggerSpawn()   // replace after disgust animation clears
         }
     }
 
     private func autoEatBomb(_ obj: FallingObjectNode) {
+        isGameOver      = true
         isControlLocked = true
         removeAction(forKey: "timer")
+        removeAction(forKey: "spawnTimer")
+        // Immediately stop and remove all other in-flight objects
+        activeObjects.filter { $0 !== obj }.forEach { $0.removeAllActions(); $0.removeFromParent() }
+        activeObjects = activeObjects.filter { $0 === obj }
         elapsedTime = currentElapsed()
-        playSFX("sfx_boom.wav")
+        playSFX("sfx_boom.m4a")
         stopBackgroundMusic()
         bombExplosionAnimation(obj)
         after(1.2) { [weak self] in
@@ -1085,8 +1260,13 @@ class GameScene: SKScene {
     private func checkChainBreak() {
         guard gameMode == .chain,
               foodEaten >= GameConstants.chainBreakTarget else { return }
+        isGameOver      = true
         isControlLocked = true
         removeAction(forKey: "timer")
+        removeAction(forKey: "spawnTimer")
+        // Clear all remaining in-flight objects
+        activeObjects.forEach { $0.removeAllActions(); $0.removeFromParent() }
+        activeObjects.removeAll()
         elapsedTime = currentElapsed()
         currentObject?.removeFromParent()
 
@@ -1102,10 +1282,10 @@ class GameScene: SKScene {
             ]))
         }
 
-        spawnPixelSparks(at: CGPoint(x: 0, y: lobsterY - bodyH/2 - 14), color: Px.amber,  count: 20)
-        spawnPixelSparks(at: CGPoint(x: 0, y: lobsterY - bodyH/2 - 14), color: Px.orange, count: 14)
+        spawnPixelSparks(at: CGPoint(x: 0, y: chainFloorY), color: Px.amber,  count: 20)
+        spawnPixelSparks(at: CGPoint(x: 0, y: chainFloorY), color: Px.orange, count: 14)
 
-        playSFX("sfx_win.wav")
+        playSFX("sfx_win.m4a")
         stopBackgroundMusic()
         flashText(loc.freeText, color: Px.amber)
         after(0.5) { [weak self] in self?.showGoodbyeLabel() }
@@ -1143,7 +1323,7 @@ class GameScene: SKScene {
         obj.run(SKAction.group([
             SKAction.scale(to: 0.05, duration: 0.10),
             SKAction.fadeOut(withDuration: 0.10)
-        ])) { obj.removeFromParent() }
+        ])) { [weak self] in self?.finishObject(obj) }
 
         setMouthOpen(true)
         after(0.16) { [weak self] in self?.setMouthOpen(false) }
@@ -1173,7 +1353,7 @@ class GameScene: SKScene {
         obj.run(SKAction.group([
             SKAction.scale(to: 0.05, duration: 0.10),
             SKAction.fadeOut(withDuration: 0.10)
-        ])) { obj.removeFromParent() }
+        ])) { [weak self] in self?.finishObject(obj) }
 
         setMouthOpen(true)
         after(0.10) { [weak self] in
@@ -1233,7 +1413,7 @@ class GameScene: SKScene {
         obj.run(SKAction.sequence([
             SKAction.scale(to: 3.0, duration: 0.10),
             SKAction.fadeOut(withDuration: 0.16)
-        ])) { obj.removeFromParent() }
+        ])) { [weak self] in self?.finishObject(obj) }
 
         let flash = SKSpriteNode(color: .white, size: CGSize(width: W, height: H))
         flash.position  = .zero
@@ -1313,7 +1493,7 @@ class GameScene: SKScene {
                 SKAction.scale(to: 0.1, duration: 0.06),
                 SKAction.fadeOut(withDuration: 0.06)
             ]),
-            SKAction.removeFromParent()
+            SKAction.run { [weak self] in self?.finishObject(obj) }
         ]))
 
         let exitX    = -W * 0.75
@@ -1386,7 +1566,7 @@ class GameScene: SKScene {
                 SKAction.scale(to: 0.1, duration: 0.06),
                 SKAction.fadeOut(withDuration: 0.06)
             ]),
-            SKAction.removeFromParent()
+            SKAction.run { [weak self] in self?.finishObject(obj) }
         ]))
 
         let exitX    = W * 0.75
@@ -1410,7 +1590,7 @@ class GameScene: SKScene {
         let fade = SKAction.fadeOut(withDuration: 0.20)
         var acts: [SKAction] = [move, fade]
         if spin { acts.append(SKAction.rotate(byAngle: .pi * 2, duration: 0.24)) }
-        obj.run(SKAction.group(acts)) { obj.removeFromParent() }
+        obj.run(SKAction.group(acts)) { [weak self] in self?.finishObject(obj) }
     }
 
     private func spawnPixelSparks(at pos: CGPoint, color: SKColor, count: Int = 12) {
@@ -1461,23 +1641,310 @@ class GameScene: SKScene {
 
     private func tickTimer() {
         guard !isPaused_game else { return }
-        elapsedTime     = currentElapsed()
-        timerLabel.text = String(format: "%.1fs", elapsedTime)
+        elapsedTime = currentElapsed()
         // Keep left seaweed box in sync (chain = time, survival = food count)
         currentScoreLabel?.text = currentScoreText
     }
 
+    // MARK: - Tutorial
+
+    /// Called once the spawned tutorial object has drifted to mid-screen.
+    /// Freezes the object in place, dims the scene, and shows the animated finger prompt.
+    private func beginTutorialStep() {
+        guard tutStep != .done else { return }
+        isTutorialFrozen = true
+
+        // Freeze the falling object in place
+        currentObject?.removeAllActions()
+
+        // Dim overlay
+        let overlay = SKNode()
+        overlay.zPosition = 60
+        overlay.name      = "tutOverlay"
+
+        let dim = SKSpriteNode(color: SKColor(red: 0, green: 0, blue: 0, alpha: 0.52),
+                               size: CGSize(width: W, height: H))
+        dim.position  = .zero
+        dim.zPosition = 0
+        overlay.addChild(dim)
+
+        // Prompt text (two lines: action + "try it")
+        let prompt = tutPromptText
+        let lbl = pixelLabelTut(prompt, size: 22)
+        lbl.position  = CGPoint(x: 0, y: H * 0.28)
+        lbl.zPosition = 2
+        lbl.numberOfLines = 0
+        overlay.addChild(lbl)
+
+        let tryLbl = pixelLabelTut(loc.tutTryIt, size: 16)
+        tryLbl.fontColor = Px.amber
+        tryLbl.position  = CGPoint(x: 0, y: H * 0.28 - 34)
+        tryLbl.zPosition = 2
+        overlay.addChild(tryLbl)
+
+        // Animated SF Symbol finger — starts on the object, swipes in the correct direction
+        let finger = buildFingerSprite(pointingAngle: fingerAngleForStep)
+        finger.position  = tutFingerStartPos
+        finger.zPosition = 3
+        overlay.addChild(finger)
+        animateSwipeFinger(finger)
+
+        addChild(overlay)
+        tutOverlay = overlay
+    }
+
+    /// Called after step 3 (swipe items done). Shows the tap-lobster prompt with no object.
+    private func beginTapToPauseStep() {
+        tutStep          = .tapToPause
+        isTutorialFrozen = true
+
+        let overlay = SKNode()
+        overlay.zPosition = 60
+        overlay.name      = "tutOverlay"
+
+        let dim = SKSpriteNode(color: SKColor(red: 0, green: 0, blue: 0, alpha: 0.52),
+                               size: CGSize(width: W, height: H))
+        dim.position  = .zero
+        dim.zPosition = 0
+        overlay.addChild(dim)
+
+        let lbl = pixelLabelTut(loc.tutPausePrompt, size: 22)
+        lbl.position  = CGPoint(x: 0, y: H * 0.28)
+        lbl.zPosition = 2
+        lbl.numberOfLines = 0
+        overlay.addChild(lbl)
+
+        // SF Symbol finger pointing down toward the lobster, bobbing
+        // Rotate so fingertip points downward (+π * 0.75, same as food swipe step)
+        let finger = buildFingerSprite(pointingAngle: .pi * 0.75)
+        finger.position  = CGPoint(x: 0, y: lobsterY + bodyH + 56)
+        finger.zPosition = 3
+        overlay.addChild(finger)
+
+        // Bob down toward lobster then back up, repeat
+        let down = SKAction.moveBy(x: 0, y: -24, duration: 0.42)
+        let up   = SKAction.moveBy(x: 0, y: +24, duration: 0.42)
+        down.timingMode = .easeInEaseOut
+        up.timingMode   = .easeInEaseOut
+        finger.run(SKAction.repeatForever(SKAction.sequence([
+            down, SKAction.wait(forDuration: 0.08), up, SKAction.wait(forDuration: 0.12)
+        ])), withKey: "fingerBob")
+
+        addChild(overlay)
+        tutOverlay = overlay
+    }
+
+    /// Removes the tutorial overlay and resumes / proceeds to next step.
+    private func dismissTutorialOverlay(completion: @escaping () -> Void) {
+        guard let ov = tutOverlay else { completion(); return }
+        tutOverlay = nil
+        isTutorialFrozen = false
+        ov.run(SKAction.sequence([
+            SKAction.fadeOut(withDuration: 0.18),
+            SKAction.removeFromParent(),
+            SKAction.run { completion() }
+        ]))
+    }
+
+    /// Advance to the next tutorial step after a correct swipe action was performed.
+    private func advanceTutorial() {
+        dismissTutorialOverlay { [weak self] in
+            guard let self else { return }
+            switch self.tutStep {
+            case .food:
+                self.tutStep = .garbage
+                self.spawnNextObject()
+            case .garbage:
+                self.tutStep = .bomb
+                self.spawnNextObject()
+            case .bomb:
+                // Mark tutorial as done now — the swipe controls are learned.
+                // Even if user quits during the pause step, it won't repeat.
+                self.gameDelegate?.tutorialDidComplete()
+                self.beginTapToPauseStep()
+            case .tapToPause, .done:
+                break
+            }
+        }
+    }
+
+    /// Called when the user taps the lobster during the tapToPause step.
+    /// Shows a simple dim + "tap anywhere to resume" message. No regular pause overlay.
+    private func handleTutorialPauseDone() {
+        // Remove the finger prompt overlay that was showing the lobster-tap instruction
+        tutOverlay?.removeFromParent()
+        tutOverlay = nil
+
+        let overlay = SKNode()
+        overlay.zPosition = 60
+        overlay.name      = "tutResumeOverlay"
+
+        let dim = SKSpriteNode(color: SKColor(red: 0, green: 0, blue: 0, alpha: 0.60),
+                               size: CGSize(width: W, height: H))
+        dim.position  = .zero
+        dim.zPosition = 0
+        overlay.addChild(dim)
+
+        let lbl = pixelLabelTut(loc.tutResumePrompt, size: 22)
+        lbl.position  = CGPoint(x: 0, y: 0)
+        lbl.zPosition = 2
+        lbl.numberOfLines = 0
+        overlay.addChild(lbl)
+
+        addChild(overlay)
+        tutOverlay = overlay
+    }
+
+    /// Called when the user taps anywhere during the tutorial paused step.
+    private func completeTutorial() {
+        // Fade out the tutorial resume overlay
+        tutOverlay?.run(SKAction.sequence([
+            SKAction.fadeOut(withDuration: 0.18),
+            SKAction.removeFromParent()
+        ]))
+        tutOverlay = nil
+        isTutorialFrozen = false
+        tutStep = .done
+        // Clear any leftover tutorial objects
+        activeObjects.forEach { $0.removeFromParent() }
+        activeObjects.removeAll()
+        // Reset game state so tutorial food/time doesn't pollute real game
+        foodEaten          = 0
+        garbageMistakes    = 0
+        gameStartTime      = Date()
+        totalPausedSeconds = 0
+        // Reset visible HUD labels
+        currentScoreLabel?.text = currentScoreText
+        if gameMode == .chain { refreshBar() }
+        // Kick off the first object immediately, timer will schedule subsequent ones
+        spawnNextObject()
+    }
+
+    // ── Prompt text per step ──────────────────────────────────────────────────
+
+    private var tutPromptText: String {
+        switch tutStep {
+        case .food:    return loc.tutFoodPrompt
+        case .garbage: return loc.tutGarbagePrompt
+        case .bomb:    return loc.tutBombPrompt
+        default:       return ""
+        }
+    }
+
+    // ── Finger builder (SF Symbol hand) ──────────────────────────────────────
+
+    /// Builds a smooth pointing-hand sprite using an SF Symbol.
+    /// `angle` rotates the base "hand.point.up.left.fill" symbol so it points
+    /// in the swipe direction: 0 = up-left (default), rotated as needed.
+    private func buildFingerSprite(pointingAngle: CGFloat) -> SKSpriteNode {
+        let sprite = symbolSprite(named: "hand.point.up.left.fill",
+                                  size: 52,
+                                  tint: UIColor.white,
+                                  weight: .regular)
+        sprite.zRotation = pointingAngle
+        sprite.alpha     = 0.92
+        // Drop shadow for readability
+        sprite.color     = .black
+        sprite.colorBlendFactor = 0.0
+        return sprite
+    }
+
+    /// Rotation angle (zRotation) for the hand symbol so it points in the swipe direction.
+    /// "hand.point.up.left.fill" natural orientation: finger points upper-left (~135° from east).
+    /// SpriteKit zRotation is counter-clockwise. We rotate so the tip aims in the swipe direction.
+    private var fingerAngleForStep: CGFloat {
+        // Default symbol points upper-left (135° CCW from east).
+        // To aim at direction D: rotate by (D - 135°).
+        //   Down  (270° = -90°): -90° - 135° = -225° = +135°  →  +π * 0.75
+        //   Right (  0°):         0° - 135°  = -135°           →  -π * 0.75
+        //   Left  (180°):        180° - 135° =  +45°           →  +π * 0.25
+        switch tutStep {
+        case .food:    return  .pi * 0.75   // point downward
+        case .garbage: return -.pi * 0.75   // point right
+        case .bomb:    return  .pi * 0.25   // point left
+        default:       return 0
+        }
+    }
+
+    /// Start position of the finger: ON the frozen object, offset slightly so the tip points at it.
+    private var tutFingerStartPos: CGPoint {
+        guard let obj = currentObject else { return .zero }
+        let objPos = obj.position
+        // Offset the hand so the fingertip starts at/near the object center
+        switch tutStep {
+        case .food:    return CGPoint(x: objPos.x,        y: objPos.y + 14)  // above, pointing down
+        case .garbage: return CGPoint(x: objPos.x - 20,   y: objPos.y)       // left of obj, pointing right
+        case .bomb:    return CGPoint(x: objPos.x + 20,   y: objPos.y)       // right of obj, pointing left
+        default:       return objPos
+        }
+    }
+
+    private func animateSwipeFinger(_ finger: SKSpriteNode) {
+        let swipeDist: CGFloat       = 80
+        let swipeDuration: TimeInterval = 0.38
+        let holdPause: TimeInterval  = 0.20
+
+        // Direction to move (away from object, matching the required swipe)
+        let delta: CGPoint
+        switch tutStep {
+        case .food:    delta = CGPoint(x:  0,          y: -swipeDist)
+        case .garbage: delta = CGPoint(x: +swipeDist,  y:  0)
+        case .bomb:    delta = CGPoint(x: -swipeDist,  y:  0)
+        default:       return
+        }
+
+        let startPos = finger.position
+
+        let swipe  = SKAction.moveBy(x: delta.x, y: delta.y, duration: swipeDuration)
+        swipe.timingMode = .easeIn
+
+        // Trail: finger fades out at end, snaps back to start, fades in
+        let fadeOut = SKAction.fadeOut(withDuration: 0.14)
+        let snapBack = SKAction.run { finger.position = startPos }
+        let fadeIn  = SKAction.sequence([
+            SKAction.unhide(),
+            SKAction.fadeIn(withDuration: 0.14)
+        ])
+
+        finger.run(SKAction.repeatForever(SKAction.sequence([
+            swipe,
+            fadeOut,
+            snapBack,
+            SKAction.wait(forDuration: holdPause),
+            fadeIn,
+            SKAction.wait(forDuration: 0.15)
+        ])), withKey: "fingerSwipe")
+    }
+
+    // ── Label helper for tutorial (supports multi-line) ───────────────────────
+
+    private func pixelLabelTut(_ text: String, size: CGFloat) -> SKLabelNode {
+        let n = SKLabelNode(text: text)
+        n.fontName                = "Courier-Bold"
+        n.fontSize                = size
+        n.fontColor               = Px.white
+        n.horizontalAlignmentMode = .center
+        n.verticalAlignmentMode   = .center
+        n.preferredMaxLayoutWidth = W * 0.78
+        return n
+    }
+
     // MARK: - Sound
 
-    /// Plays a looping background music track if "bg_music" (mp3/m4a/wav) exists in the bundle.
+    /// Plays a looping background music track.
+    /// Looks in the "Sounds" subfolder first, then falls back to the bundle root.
     private func startBackgroundMusic() {
-        let candidates = ["bg_music.mp3", "bg_music.m4a", "bg_music.wav", "bg_music.caf"]
+        let candidates = ["bg_music.mp3", "bg_music.m4a", "bg_music.caf"]
         for name in candidates {
-            if let url = Bundle.main.url(forResource: name.components(separatedBy: ".").first,
-                                         withExtension: name.components(separatedBy: ".").last) {
+            let parts = name.components(separatedBy: ".")
+            guard parts.count == 2 else { continue }
+            let url = Bundle.main.url(forResource: parts[0], withExtension: parts[1],
+                                      subdirectory: "Sounds")
+                   ?? Bundle.main.url(forResource: parts[0], withExtension: parts[1])
+            if let url {
                 do {
                     bgMusicPlayer = try AVAudioPlayer(contentsOf: url)
-                    bgMusicPlayer?.numberOfLoops = -1  // loop forever
+                    bgMusicPlayer?.numberOfLoops = -1
                     bgMusicPlayer?.volume = 0.35
                     bgMusicPlayer?.play()
                 } catch { /* file found but unreadable */ }
@@ -1491,13 +1958,15 @@ class GameScene: SKScene {
         bgMusicPlayer = nil
     }
 
-    /// Plays a short SFX. Filename must include extension, e.g. "chomp.wav".
-    /// Silently does nothing if the file is missing (so the game works without audio assets).
+    /// Plays a short SFX using the pre-loaded AVAudioPlayer for that file.
+    /// If the player was not pre-loaded (file missing), does nothing silently.
+    /// Filename must include extension, e.g. "sfx_chomp.m4a".
     private func playSFX(_ filename: String) {
-        let parts = filename.components(separatedBy: ".")
-        guard parts.count == 2,
-              Bundle.main.url(forResource: parts[0], withExtension: parts[1]) != nil else { return }
-        run(SKAction.playSoundFileNamed(filename, waitForCompletion: false))
+        let base = filename.components(separatedBy: ".").first ?? filename
+        guard let player = sfxPlayers[base] else { return }
+        // If the previous play hasn't finished, restart from beginning
+        if player.isPlaying { player.stop(); player.currentTime = 0 }
+        player.play()
     }
 
     // MARK: - Utilities

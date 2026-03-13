@@ -102,13 +102,13 @@ struct ResultView: View {
 
                 // Mode badge
                 Text(result.mode == .survival ? loc.survivalMode : loc.chainMode)
-                    .font(.system(size: 9, weight: .black))
+                    .font(.system(size: 11, weight: .black))
                     .foregroundColor(result.mode == .survival ? .pxGold : .pxAmber)
-                    .padding(.bottom, 4)
+                    .padding(.bottom, 6)
 
                 // Status title
                 Text(statusTitle)
-                    .font(.system(size: 26, weight: .black))
+                    .font(.system(size: 30, weight: .black))
                     .foregroundColor(.pxCream)
                     .shadow(color: .black.opacity(0.6), radius: 0, x: 2, y: 2)
                     .multilineTextAlignment(.center)
@@ -149,11 +149,6 @@ struct ResultView: View {
                     statRow(label: loc.trashEaten,
                             value: "\(result.garbageMistakes)",
                             valueColor: result.garbageMistakes > 0 ? .pxRed : .pxCream)
-                    pixelDivider()
-                    statRow(label: loc.causeDeath,
-                            icon: "bolt.fill",
-                            value: loc.bombCause,
-                            valueColor: .pxRed)
 
                     if result.mode == .chain, let best = bestTime {
                         pixelDivider()
@@ -169,46 +164,57 @@ struct ResultView: View {
                 .padding(.bottom, 32)
 
                 // ── Buttons ──
+                // Disabled until the appear animation completes to prevent
+                // tapping through before the view is fully on screen.
                 VStack(spacing: 12) {
                     Button(action: onRestart) {
                         Text(loc.playAgain)
-                            .font(.system(size: 20, weight: .black))
+                            .font(.system(size: 22, weight: .black))
                             .foregroundColor(.pxNavy)
-                            .frame(width: 230, height: 54)
+                            .frame(width: 240, height: 58)
                             .background(Color.pxCream)
                             .overlay(alignment: .bottomTrailing) {
                                 Rectangle()
                                     .fill(Color.black.opacity(0.4))
-                                    .frame(width: 230, height: 54)
+                                    .frame(width: 240, height: 58)
                                     .offset(x: 4, y: 4)
                                     .zIndex(-1)
                             }
                     }
+                    .disabled(!appeared)
 
                     Button(action: onBackToMenu) {
                         Text(loc.backToMenu)
-                            .font(.system(size: 15, weight: .black))
+                            .font(.system(size: 17, weight: .black))
                             .foregroundColor(.pxCream)
-                            .frame(width: 230, height: 40)
+                            .frame(width: 240, height: 46)
                             .background(Color.white.opacity(0.10))
                             .overlay(
                                 Rectangle()
                                     .stroke(Color.pxCream.opacity(0.40), lineWidth: 1)
                             )
                     }
+                    .disabled(!appeared)
                 }
 
                 Spacer()
             }
             .padding(.horizontal, 24)
         }
-        .onAppear { appeared = true }
+        .onAppear {
+            // Wait for the opacity transition (0.30 s) + a small buffer
+            // before enabling buttons, so a fast tap right after death
+            // can't trigger restart before the view is fully on screen.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                appeared = true
+            }
+        }
     }
 
     // MARK: - Helpers
 
     private var statusTitle: String {
-        if result.mode == .survival { return "\(loc.boomText) \(result.foodEaten) \(loc.food)" }
+        if result.mode == .survival { return "\(loc.boomText)  \(result.foodEaten)" }
         return result.won ? loc.youBrokeFree : loc.bombHit
     }
 
@@ -217,20 +223,20 @@ struct ResultView: View {
                          value: String, valueColor: Color = .pxCream) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundColor(.pxCream.opacity(0.65))
             Spacer()
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 11, weight: .black))
+                    .font(.system(size: 13, weight: .black))
                     .foregroundColor(.pxRed)
             }
             Text(value)
-                .font(.system(size: 13, weight: .black, design: .monospaced))
+                .font(.system(size: 16, weight: .black, design: .monospaced))
                 .foregroundColor(valueColor)
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 12)
+        .padding(.vertical, 14)
     }
 
     @ViewBuilder

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		FD628AA22F60FB240009D0B9 /* SpriteKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FD628AA02F60FB240009D0B9 /* SpriteKit.framework */; };
+		FDAAEF012F63D4FE00F2E6CF /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = FDAAEF002F63D4FE00F2E6CF /* GoogleMobileAds */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -15,9 +16,22 @@
 		FD628AA02F60FB240009D0B9 /* SpriteKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SpriteKit.framework; path = System/Library/Frameworks/SpriteKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		FD628AB02F60FB240009D0B9 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = FD628A912F60FB230009D0B9 /* MyLobster */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		FD628A942F60FB230009D0B9 /* MyLobster */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FD628AB02F60FB240009D0B9 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
+			);
 			path = MyLobster;
 			sourceTree = "<group>";
 		};
@@ -28,6 +42,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FDAAEF012F63D4FE00F2E6CF /* GoogleMobileAds in Frameworks */,
 				FD628AA22F60FB240009D0B9 /* SpriteKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -80,6 +95,7 @@
 			);
 			name = MyLobster;
 			packageProductDependencies = (
+				FDAAEF002F63D4FE00F2E6CF /* GoogleMobileAds */,
 			);
 			productName = MyLobster;
 			productReference = FD628A922F60FB230009D0B9 /* MyLobster.app */;
@@ -109,6 +125,9 @@
 			);
 			mainGroup = FD628A892F60FB230009D0B9;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				FDAAEEFF2F63D4FE00F2E6CF /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = FD628A932F60FB230009D0B9 /* Products */;
 			projectDirPath = "";
@@ -270,12 +289,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 3K8X7QZNL6;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MyLobster/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -302,12 +317,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 3K8X7QZNL6;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MyLobster/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -347,6 +358,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		FDAAEEFF2F63D4FE00F2E6CF /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleads/swift-package-manager-google-mobile-ads.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 13.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		FDAAEF002F63D4FE00F2E6CF /* GoogleMobileAds */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FDAAEEFF2F63D4FE00F2E6CF /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */;
+			productName = GoogleMobileAds;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = FD628A8A2F60FB230009D0B9 /* Project object */;
 }

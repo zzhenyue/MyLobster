@@ -11,8 +11,11 @@ struct GameView: View {
     let language: AppLanguage
     let bestChainTime:    TimeInterval?
     let bestSurvivalFood: Int?
-    let onGameEnd:    (GameResult) -> Void
-    let onQuitToTitle: () -> Void
+    let isTutorialDone:   Bool
+    let onGameEnd:        (GameResult) -> Void
+    let onQuitToTitle:    () -> Void
+    let onTutorialDone:   () -> Void
+    let onWillQuit:       (Int, GameMode) -> Void   // (foodEaten, mode) — called before quit
 
     var body: some View {
         GeometryReader { geo in
@@ -21,8 +24,11 @@ struct GameView: View {
                               language: language,
                               bestChainTime: bestChainTime,
                               bestSurvivalFood: bestSurvivalFood,
+                              isTutorialDone: isTutorialDone,
                               onGameEnd: onGameEnd,
-                              onQuitToTitle: onQuitToTitle)
+                              onQuitToTitle: onQuitToTitle,
+                              onTutorialDone: onTutorialDone,
+                              onWillQuit: onWillQuit)
         }
         .ignoresSafeArea()
     }
@@ -36,11 +42,17 @@ struct SpriteKitGameView: UIViewRepresentable {
     let language: AppLanguage
     let bestChainTime:    TimeInterval?
     let bestSurvivalFood: Int?
-    let onGameEnd:    (GameResult) -> Void
-    let onQuitToTitle: () -> Void
+    let isTutorialDone:   Bool
+    let onGameEnd:        (GameResult) -> Void
+    let onQuitToTitle:    () -> Void
+    let onTutorialDone:   () -> Void
+    let onWillQuit:       (Int, GameMode) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onGameEnd: onGameEnd, onQuitToTitle: onQuitToTitle)
+        Coordinator(onGameEnd: onGameEnd,
+                    onQuitToTitle: onQuitToTitle,
+                    onTutorialDone: onTutorialDone,
+                    onWillQuit: onWillQuit)
     }
 
     func makeUIView(context: Context) -> SKView {
@@ -55,6 +67,7 @@ struct SpriteKitGameView: UIViewRepresentable {
         scene.language          = language
         scene.bestChainTime     = bestChainTime
         scene.bestSurvivalFood  = bestSurvivalFood
+        scene.skipTutorial      = isTutorialDone
         scene.scaleMode         = .aspectFill
         scene.gameDelegate      = context.coordinator
         view.presentScene(scene)
@@ -70,13 +83,19 @@ struct SpriteKitGameView: UIViewRepresentable {
 
     // MARK: Coordinator
     class Coordinator: NSObject, GameSceneDelegate {
-        let onGameEnd:    (GameResult) -> Void
-        let onQuitToTitle: () -> Void
+        let onGameEnd:      (GameResult) -> Void
+        let onQuitToTitle:  () -> Void
+        let onTutorialDone: () -> Void
+        let onWillQuit:     (Int, GameMode) -> Void
 
         init(onGameEnd: @escaping (GameResult) -> Void,
-             onQuitToTitle: @escaping () -> Void) {
-            self.onGameEnd     = onGameEnd
-            self.onQuitToTitle = onQuitToTitle
+             onQuitToTitle: @escaping () -> Void,
+             onTutorialDone: @escaping () -> Void,
+             onWillQuit: @escaping (Int, GameMode) -> Void) {
+            self.onGameEnd      = onGameEnd
+            self.onQuitToTitle  = onQuitToTitle
+            self.onTutorialDone = onTutorialDone
+            self.onWillQuit     = onWillQuit
         }
 
         func gameDidEnd(result: GameResult) {
@@ -86,11 +105,20 @@ struct SpriteKitGameView: UIViewRepresentable {
         func gameDidQuitToTitle() {
             DispatchQueue.main.async { self.onQuitToTitle() }
         }
+
+        func gameWillQuit(foodEaten: Int, mode: GameMode) {
+            DispatchQueue.main.async { self.onWillQuit(foodEaten, mode) }
+        }
+
+        func tutorialDidComplete() {
+            DispatchQueue.main.async { self.onTutorialDone() }
+        }
     }
 }
 
 #Preview {
     GameView(mode: .chain, language: .zh,
              bestChainTime: nil, bestSurvivalFood: nil,
-             onGameEnd: { _ in }, onQuitToTitle: {})
+             isTutorialDone: false,
+             onGameEnd: { _ in }, onQuitToTitle: {}, onTutorialDone: {}, onWillQuit: { _, _ in })
 }

@@ -51,35 +51,19 @@ enum GameConstants {
     // ── Survival Mode ───────────────────────────────────────────────────────
 
     /// Starting fall speed in survival mode (slightly faster than chain mode base)
-    static let survivalBaseFallSpeed: CGFloat = 520   // pts/sec
+    static let survivalBaseFallSpeed: CGFloat = 640   // pts/sec
 
     /// Same speed-increase-per-tier as chain mode, applied more aggressively
-    static let survivalSpeedIncreaseStep: CGFloat = 40
+    static let survivalSpeedIncreaseStep: CGFloat = 55
 
     // ── Item Spawn Weights ──────────────────────────────────────────────────
     //
-    //  HOW TO TUNE:
-    //   • food, garbage, bomb are probabilities that must sum to 1.0
-    //   • foodEaten brackets let you ramp difficulty over time
-    //   • Add more `case` ranges to create additional difficulty phases
+    //  Equal 1/3 probability for food, garbage, and bomb in both modes.
+    //  The `foodEaten` and `mode` parameters are kept for future tuning.
     //
     static func spawnWeights(foodEaten: Int,
                              mode: GameMode) -> (food: Double, garbage: Double, bomb: Double) {
-        switch mode {
-        case .chain:
-            switch foodEaten {
-            case 0..<15:  return (0.60, 0.25, 0.15)
-            case 15..<25: return (0.57, 0.25, 0.18)
-            default:      return (0.55, 0.25, 0.20)
-            }
-        case .survival:
-            switch foodEaten {
-            case 0..<10:  return (0.62, 0.25, 0.13)
-            case 10..<25: return (0.58, 0.26, 0.16)
-            case 25..<50: return (0.55, 0.26, 0.19)
-            default:      return (0.52, 0.26, 0.22)
-            }
-        }
+        return (1.0/2.0, 1.0/4.0, 1.0/4.0)
     }
 
     // ── Fall Speed ──────────────────────────────────────────────────────────
@@ -89,8 +73,8 @@ enum GameConstants {
     //   • speedIncreaseStep: pts/sec added per difficulty tier
     //   • speedTierInterval: food items eaten before moving up one tier (cap = 5 tiers)
     //
-    static let baseFallSpeed:      CGFloat = 420   // chain mode starting speed
-    static let speedIncreaseStep:  CGFloat = 35    // extra speed per tier
+    static let baseFallSpeed:      CGFloat = 620   // chain mode starting speed
+    static let speedIncreaseStep:  CGFloat = 55    // extra speed per tier
     static let speedTierInterval           = 5     // food items per tier
 
     static func fallSpeed(foodEaten: Int, mode: GameMode) -> CGFloat {
@@ -99,6 +83,28 @@ enum GameConstants {
         let tier = min(foodEaten / speedTierInterval, 8)   // survival allows more tiers
         return base + CGFloat(tier) * step
     }
+
+    // ── Spawn Interval ──────────────────────────────────────────────────────
+    //
+    //  Two-mechanism spawning:
+    //   1. A repeating TIMER fires every spawnInterval() seconds (background pace),
+    //      so multiple objects can be on screen simultaneously.
+    //   2. A TRIGGER-SPAWN fires immediately whenever an object is handled AND
+    //      the screen is now empty — guaranteeing the player never sees a blank screen.
+    //
+    //  The timer interval shrinks as food is eaten (same tier system as fall speed).
+    //
+    static let spawnIntervalBase:          TimeInterval = 1.2   // timer period at tier 0
+    static let spawnIntervalFloor:         TimeInterval = 0.5   // timer period floor
+    static let spawnIntervalDecayPerTier:  TimeInterval = 0.09  // timer shrinks per tier
+
+    /// Background timer interval (how often the clock independently fires a spawn).
+    static func spawnInterval(foodEaten: Int) -> TimeInterval {
+        let tier = min(foodEaten / speedTierInterval, 8)
+        return max(spawnIntervalBase - Double(tier) * spawnIntervalDecayPerTier,
+                   spawnIntervalFloor)
+    }
+
 
     // ── Input ────────────────────────────────────────────────────────────────
     static let swipeThreshold:          CGFloat       = 55
